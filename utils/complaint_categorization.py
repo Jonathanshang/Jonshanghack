@@ -1,4 +1,3 @@
-import openai
 import json
 import re
 import time
@@ -63,8 +62,8 @@ class ComplaintCategorizer:
         self.model = model
         self.logger = logger or logging.getLogger(__name__)
         
-        # Initialize OpenAI client
-        openai.api_key = self.api_key
+        # Store API key for client initialization
+        # Client will be initialized per request
         
         # Define categories and their characteristics
         self.categories = {
@@ -255,7 +254,10 @@ Analyze the complaint and provide your response in the exact JSON format above.
             prompt = self._create_categorization_prompt(complaint_text, competitor_name)
             
             # Make API call to OpenAI
-            response = openai.ChatCompletion.create(
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key)
+            
+            response = client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are an expert business analyst specializing in competitive intelligence and customer feedback analysis."},

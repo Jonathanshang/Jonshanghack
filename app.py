@@ -1,15 +1,38 @@
 import streamlit as st
-import logging
+import pandas as pd
 from datetime import datetime
-import json
+import time
+import sys
 import os
+from typing import Dict, List, Any, Optional
+
+# Add the project root to Python path
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Import utilities
 from config import Config
+from utils.url_discovery import URLDiscovery
+from utils.scraper import WebScraper
+from utils.google_search import GoogleSearchScraper
+from utils.social_media_scraper import SocialMediaScraper
+from utils.complaint_categorization import ComplaintCategorizer
+from utils.pricing_analysis import PricingAnalyzer
+from utils.monetization_analysis import MonetizationAnalyzer
+from utils.vision_analysis import VisionAnalyzer
+from utils import country_localization
 from utils.logger import setup_logger
-from utils.url_discovery import URLDiscovery, discover_competitor_urls, validate_url
-from utils.scraper import WebScraper, extract_page_category, analyze_content_quality
 from utils.country_localization import country_localization
 from utils.google_search import GoogleSearchScraper, analyze_complaint_patterns
 from utils.social_media_scraper import SocialMediaScraper, create_social_media_urls_from_search_results, analyze_social_media_content
+from utils.master_prompt_designer import MasterPromptDesigner
+from utils.export_manager import ExportManager
+from utils.battlecard_generator import BattlecardGenerator
+import utils.country_localization as country_localization
+import requests
+import json
+from utils.battlecard_generator import BattlecardGenerator
 
 # Configure page
 st.set_page_config(
@@ -191,62 +214,134 @@ def analysis_tab():
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # Advanced options
-    with st.expander("Advanced Options"):
-        col1, col2 = st.columns(2)
+    # Analysis Objective Selection
+    with st.expander("🎯 Select Analysis Objective", expanded=True):
+        st.markdown("**Choose your analysis objective:**")
         
-        with col1:
-            include_social = st.checkbox("Include Social Media Analysis", value=True)
-            include_reviews = st.checkbox("Include Review Site Analysis", value=True)
+        analysis_objectives = [
+            "💰 Hardware & Software Pricing Analysis",
+            "🎯 Existing Feature Analysis", 
+            "🔮 Vision & Upcoming Features",
+            "📱 Socially-Sourced Weaknesses"
+        ]
         
-        with col2:
-            analysis_depth = st.selectbox(
-                "Analysis Depth",
-                ["Standard", "Deep", "Comprehensive"],
-                index=1,
-                help="Standard: Basic analysis, Deep: Include social media, Comprehensive: Full analysis with predictions"
-            )
-            
-            google_search_enabled = st.checkbox("Enable Google Search for Complaints", value=True, help="Search for social media complaints and reviews")
+        selected_objective = st.selectbox(
+            "Analysis Objective",
+            options=analysis_objectives,
+            help="Select the type of analysis you want to perform"
+        )
+        
+        # Map objectives to phases
+        phase_mapping = {
+            "💰 Hardware & Software Pricing Analysis": {
+                'phase1_enabled': True,   # URL Discovery (to find pricing pages)
+                'phase2_enabled': True,   # Content Scraping (to scrape pricing content)
+                'phase3_enabled': True,   # Content Analysis (to analyze pricing content)
+                'phase4_enabled': False,  # Not needed for pricing
+                'phase5_enabled': False,  # Not needed for pricing
+                'phase6_enabled': False   # Not needed for pricing
+            },
+            "🎯 Existing Feature Analysis": {
+                'phase1_enabled': True,   # URL Discovery (to find feature pages)
+                'phase2_enabled': True,   # Content Scraping (to scrape feature content)
+                'phase3_enabled': True,   # Content Analysis (to analyze feature content)
+                'phase4_enabled': False,  # Not needed for features
+                'phase5_enabled': False,  # Not needed for features
+                'phase6_enabled': False   # Not needed for features
+            },
+            "🔮 Vision & Upcoming Features": {
+                'phase1_enabled': True,   # URL Discovery (to find blog, careers, news pages)
+                'phase2_enabled': True,   # Content Scraping (to scrape blog/news content)
+                'phase3_enabled': True,   # Content Analysis (to analyze content)
+                'phase4_enabled': False,  # Not needed for vision
+                'phase5_enabled': False,  # Not needed for vision
+                'phase6_enabled': False   # Not needed for vision
+            },
+            "📱 Socially-Sourced Weaknesses": {
+                'phase1_enabled': False,  # Not needed for social analysis
+                'phase2_enabled': False,  # Not needed for social analysis
+                'phase3_enabled': False,  # Not needed for social analysis
+                'phase4_enabled': True,   # Google Search for Complaints
+                'phase5_enabled': True,   # Social Media Scraping
+                'phase6_enabled': True    # AI Complaint Categorization
+            }
+        }
+        
+        # Get phases for selected objective
+        phase_config = phase_mapping[selected_objective]
+        
+        # Extract phase variables
+        phase1_enabled = phase_config['phase1_enabled']
+        phase2_enabled = phase_config['phase2_enabled']
+        phase3_enabled = phase_config['phase3_enabled']
+        phase4_enabled = phase_config['phase4_enabled']
+        phase5_enabled = phase_config['phase5_enabled']
+        phase6_enabled = phase_config['phase6_enabled']
+        
+        # Show what phases will be executed
+        st.markdown("**Analysis phases that will be executed:**")
+        phase_descriptions = {
+            'phase1': "🔍 Phase 1: URL Discovery - Discover competitor pages",
+            'phase2': "📄 Phase 2: Content Scraping - Scrape discovered pages",
+            'phase3': "🧠 Phase 3: Content Analysis - Analyze scraped content",
+            'phase4': "🔎 Phase 4: Google Search - Search for complaints",
+            'phase5': "📱 Phase 5: Social Media Scraping - Scrape social content",
+            'phase6': "🤖 Phase 6: AI Categorization - Categorize complaints"
+        }
+        
+        for phase_key, enabled in phase_config.items():
+            phase_num = phase_key.replace('_enabled', '')
+            if enabled:
+                st.markdown(f"✅ {phase_descriptions[phase_num]}")
+            else:
+                st.markdown(f"⏭️ {phase_descriptions[phase_num]} - *Skipped*")
     
-    # Analysis button
-    if st.button("🚀 Start Analysis", type="primary", use_container_width=True):
-        if competitor_name and competitor_url:
-            # Validate URL format
-            if not validate_url(competitor_url):
-                st.error("Please enter a valid URL (e.g., https://www.example.com)")
-                return
-            
-            logger.info(f"Starting analysis for {competitor_name} at {competitor_url} for country {country_code}")
-            
-            # Update session state
-            st.session_state.analysis_status = "Running"
-            st.session_state.current_competitor = competitor_name
-            st.session_state.current_url = competitor_url
-            st.session_state.current_country = country_code
-            
-            # Add to recent analyses
-            if 'recent_analyses' not in st.session_state:
-                st.session_state.recent_analyses = []
-            
-            st.session_state.recent_analyses.append({
-                'competitor': competitor_name,
-                'url': competitor_url,
-                'country': country_code,
-                'date': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                'depth': analysis_depth
-            })
-            
-            st.success(f"Analysis started for {competitor_name} in {country_code}")
-            
-            # Real URL discovery process
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                # Phase 1: URL Discovery
-                status_text.text('🔍 Discovering competitor pages...')
-                progress_bar.progress(15)
+    # Auto-trigger analysis if both inputs are provided
+    if competitor_name and competitor_url:
+        # Store phase selection in session state
+        st.session_state.phase_config = phase_config
+        st.session_state.selected_objective = selected_objective
+        
+        # Calculate total phases to run for progress tracking
+        total_phases = sum([phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled])
+        current_phase = 0
+        
+        logger.info(f"Starting analysis for {competitor_name} at {competitor_url} for country {country_code}")
+        logger.info(f"Selected objective: {selected_objective}")
+        logger.info(f"Selected phases: {[f'Phase {i+1}' for i, enabled in enumerate([phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled]) if enabled]}")
+        
+        # Update session state
+        st.session_state.analysis_status = "Running"
+        st.session_state.current_competitor = competitor_name
+        st.session_state.current_url = competitor_url
+        st.session_state.current_country = country_code
+        
+        # Add to recent analyses
+        if 'recent_analyses' not in st.session_state:
+            st.session_state.recent_analyses = []
+        
+        st.session_state.recent_analyses.append({
+            'competitor': competitor_name,
+            'url': competitor_url,
+            'country': country_code,
+            'date': datetime.now().strftime("%Y-%m-%d %H:%M"),
+            'objective': selected_objective
+        })
+        
+        st.success(f"Analysis started for {competitor_name} in {country_code}")
+        st.info(f"🎯 Objective: {selected_objective}")
+        
+        # Real URL discovery process
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            # Phase 1: URL Discovery
+            if phase1_enabled:
+                current_phase += 1
+                progress_percent = int((current_phase / total_phases) * 100)
+                status_text.text(f'🔍 Phase 1: Discovering competitor pages... ({current_phase}/{total_phases})')
+                progress_bar.progress(progress_percent)
                 
                 discovery = URLDiscovery(competitor_url, config)
                 discovered_urls = discovery.discover_all_pages()
@@ -254,11 +349,19 @@ def analysis_tab():
                 # Store discovered URLs in session state
                 st.session_state.discovered_urls = discovered_urls
                 st.session_state.discovery_summary = discovery.get_discovery_summary()
+            else:
+                # Set empty results if Phase 1 is skipped
+                st.session_state.discovered_urls = {}
+                st.session_state.discovery_summary = {}
+                logger.info("Phase 1 (URL Discovery) skipped")
+            
+            # Phase 2: Content Scraping with Country Context
+            if phase2_enabled:
+                current_phase += 1
+                progress_percent = int((current_phase / total_phases) * 100)
+                status_text.text(f'📄 Phase 2: Scraping page content... ({current_phase}/{total_phases})')
+                progress_bar.progress(progress_percent)
                 
-                progress_bar.progress(35)
-                status_text.text('📄 Scraping page content...')
-                
-                # Phase 2: Content Scraping with Country Context
                 country_context = country_localization.get_competitor_context(country_code)
                 st.info(f"Analyzing for {country_context['country']} market using {country_context['currency']} currency")
                 
@@ -266,22 +369,25 @@ def analysis_tab():
                 
                 # Get priority URLs for scraping (limit to key pages)
                 priority_urls = []
-                for category in ['pricing', 'features', 'about', 'contact']:
-                    category_urls = discovered_urls.get(category, [])
-                    if category_urls:
-                        priority_urls.extend(category_urls[:3])  # Take first 3 from each category
+                discovered_urls = st.session_state.get('discovered_urls', {})
                 
-                # Add blog URLs (fewer due to volume)
-                blog_urls = discovered_urls.get('blog', [])
-                if blog_urls:
-                    priority_urls.extend(blog_urls[:2])  # Take first 2 blog posts
+                if discovered_urls:
+                    for category in ['pricing', 'features', 'about', 'contact']:
+                        category_urls = discovered_urls.get(category, [])
+                        if category_urls:
+                            priority_urls.extend(category_urls[:3])  # Take first 3 from each category
+                    
+                    # Add blog URLs (fewer due to volume)
+                    blog_urls = discovered_urls.get('blog', [])
+                    if blog_urls:
+                        priority_urls.extend(blog_urls[:2])  # Take first 2 blog posts
+                else:
+                    # If no URLs discovered, use the main URL
+                    priority_urls = [competitor_url]
                 
                 # Limit total scraping to prevent long wait times
                 max_scrape_pages = min(len(priority_urls), 15)
                 urls_to_scrape = priority_urls[:max_scrape_pages]
-                
-                progress_bar.progress(45)
-                status_text.text(f'🔄 Scraping {len(urls_to_scrape)} key pages...')
                 
                 # Scrape the priority pages with country context
                 scraping_results = scraper.scrape_multiple_pages(urls_to_scrape, country_code=country_code)
@@ -289,13 +395,23 @@ def analysis_tab():
                 # Store scraping results in session state
                 st.session_state.scraping_results = scraping_results
                 st.session_state.scraping_stats = scraper.get_scraping_stats()
+            else:
+                # Set empty results if Phase 2 is skipped
+                st.session_state.scraping_results = {'scraped_pages': [], 'summary': {'total_urls': 0}}
+                st.session_state.scraping_stats = {}
+                logger.info("Phase 2 (Content Scraping) skipped")
+            
+            # Phase 3: Content Analysis
+            if phase3_enabled:
+                current_phase += 1
+                progress_percent = int((current_phase / total_phases) * 100)
+                status_text.text(f'🧠 Phase 3: Analyzing scraped content... ({current_phase}/{total_phases})')
+                progress_bar.progress(progress_percent)
                 
-                progress_bar.progress(70)
-                status_text.text('🧠 Analyzing scraped content...')
-                
-                # Phase 3: Content Analysis
                 analyzed_pages = []
-                for scraped_page in scraping_results['scraped_pages']:
+                scraping_results = st.session_state.get('scraping_results', {})
+                
+                for scraped_page in scraping_results.get('scraped_pages', []):
                     page_analysis = {
                         'url': scraped_page['url'],
                         'category': extract_page_category(scraped_page),
@@ -311,108 +427,277 @@ def analysis_tab():
                     analyzed_pages.append(page_analysis)
                 
                 st.session_state.analyzed_pages = analyzed_pages
+            else:
+                # Set empty results if Phase 3 is skipped
+                st.session_state.analyzed_pages = []
+                logger.info("Phase 3 (Content Analysis) skipped")
+            
+            # Pricing Analysis (specialized analysis using scraped content)
+            if phase2_enabled or phase3_enabled:  # Only run if we have scraped content
+                status_text.text(f'💰 Specialized Analysis: Analyzing pricing strategy...')
                 
-                # Phase 4: Google Search for Social Media Complaints (New!)
-                if google_search_enabled and (include_social or include_reviews):
-                    progress_bar.progress(75)
-                    status_text.text('🔍 Searching for social media complaints...')
+                try:
+                    # Initialize pricing analyzer
+                    pricing_analyzer = PricingAnalyzer(
+                        api_key=config.openai_api_key,
+                        model_name=config.model_name,
+                        logger=logger
+                    )
                     
-                    try:
-                        # Initialize Google search scraper
-                        google_scraper = GoogleSearchScraper(config)
+                    # Get scraped content for pricing analysis
+                    scraping_results = st.session_state.get('scraping_results', {})
+                    scraped_pages = scraping_results.get('scraped_pages', [])
+                    
+                    if scraped_pages:
+                        # Get country context for pricing analysis
+                        country_context = country_localization.get_competitor_context(country_code)
                         
-                        # Search for competitor complaints
-                        complaint_search_results = google_scraper.search_competitor_complaints(
-                            competitor_name, 
-                            country_code
+                        # Perform pricing analysis
+                        pricing_analysis = pricing_analyzer.analyze_competitor_pricing(
+                            competitor_name=competitor_name,
+                            scraped_content=scraped_pages,
+                            country_context=country_context
                         )
                         
-                        # Analyze complaint patterns
-                        complaint_analysis = analyze_complaint_patterns(complaint_search_results)
+                        # Store results in session state
+                        st.session_state.pricing_analysis = pricing_analysis
+                        
+                        # Log pricing analysis summary
+                        logger.info(f"Pricing analysis completed for {competitor_name}")
+                        logger.info(f"Currency detected: {pricing_analysis.get('currency_detected', 'Unknown')}")
+                        logger.info(f"Hardware model: {pricing_analysis.get('hardware_pricing', {}).get('model_type', 'Unknown')}")
+                        logger.info(f"Software model: {pricing_analysis.get('software_pricing', {}).get('pricing_model', 'Unknown')}")
+                        logger.info(f"Hidden fees risk: {pricing_analysis.get('hidden_fees', {}).get('risk_level', 'Unknown')}")
+                        
+                    else:
+                        logger.info("No scraped content available for pricing analysis")
+                        st.session_state.pricing_analysis = None
+                        
+                except Exception as e:
+                    logger.error(f"Error during pricing analysis: {str(e)}")
+                    st.warning(f"Pricing analysis failed: {str(e)} - continuing with available analysis")
+                    st.session_state.pricing_analysis = None
+            else:
+                # Set empty results if prerequisite phases are skipped
+                st.session_state.pricing_analysis = None
+                logger.info("Pricing analysis skipped - no scraped content available")
+            
+            # Monetization Analysis (specialized analysis using scraped content and pricing data)
+            if phase2_enabled or phase3_enabled:  # Only run if we have scraped content
+                status_text.text(f'💰 Specialized Analysis: Analyzing monetization strategy...')
+                
+                try:
+                    # Initialize monetization analyzer
+                    monetization_analyzer = MonetizationAnalyzer(
+                        api_key=config.openai_api_key,
+                        model_name=config.model_name,
+                        logger=logger
+                    )
+                    
+                    # Get scraped content and pricing analysis for monetization analysis
+                    scraping_results = st.session_state.get('scraping_results', {})
+                    scraped_pages = scraping_results.get('scraped_pages', [])
+                    pricing_analysis = st.session_state.get('pricing_analysis', None)
+                    
+                    if scraped_pages:
+                        # Get country context for monetization analysis
+                        country_context = country_localization.get_competitor_context(country_code)
+                        
+                        # Perform monetization analysis
+                        monetization_analysis = monetization_analyzer.analyze_competitor_monetization(
+                            competitor_name=competitor_name,
+                            scraped_content=scraped_pages,
+                            pricing_analysis=pricing_analysis,
+                            country_context=country_context
+                        )
                         
                         # Store results in session state
-                        st.session_state.complaint_search_results = complaint_search_results
-                        st.session_state.complaint_analysis = complaint_analysis
+                        st.session_state.monetization_analysis = monetization_analysis
                         
-                        progress_bar.progress(85)
-                        status_text.text('📊 Analyzing complaint patterns...')
+                        # Log monetization analysis summary
+                        logger.info(f"Monetization analysis completed for {competitor_name}")
+                        logger.info(f"Revenue model: {monetization_analysis.get('revenue_streams', {}).get('revenue_model_type', 'Unknown')}")
+                        logger.info(f"Lock-in strength: {monetization_analysis.get('lock_in_strategies', {}).get('lock_in_strength', 'Unknown')}")
+                        logger.info(f"Expansion potential: {monetization_analysis.get('expansion_revenue', {}).get('expansion_potential', 'Unknown')}")
+                        logger.info(f"Primary streams: {len(monetization_analysis.get('revenue_streams', {}).get('primary_streams', []))}")
                         
-                        # Log complaint search summary
-                        logger.info(f"Google search completed for {competitor_name}")
-                        logger.info(f"Total complaints found: {complaint_analysis['total_complaints']}")
-                        logger.info(f"Platforms searched: {list(complaint_search_results['platforms'].keys())}")
+                    else:
+                        logger.info("No scraped content available for monetization analysis")
+                        st.session_state.monetization_analysis = None
                         
-                        # Phase 5: Social Media Scraping (New!)
-                        if include_social and complaint_search_results.get('summary', {}).get('total_results', 0) > 0:
-                            progress_bar.progress(80)
-                            status_text.text('🔍 Scraping social media content...')
+                except Exception as e:
+                    logger.error(f"Error during monetization analysis: {str(e)}")
+                    st.warning(f"Monetization analysis failed: {str(e)} - continuing with available analysis")
+                    st.session_state.monetization_analysis = None
+            else:
+                # Set empty results if prerequisite phases are skipped
+                st.session_state.monetization_analysis = None
+                logger.info("Monetization analysis skipped - no scraped content available")
+            
+            # Vision Analysis (specialized analysis using scraped content for strategic direction)
+            if phase2_enabled or phase3_enabled:  # Only run if we have scraped content
+                status_text.text(f'🔮 Specialized Analysis: Analyzing competitor vision & roadmap...')
+                
+                try:
+                    # Initialize vision analyzer
+                    vision_analyzer = VisionAnalyzer(
+                        api_key=config.openai_api_key,
+                        model_name=config.model_name,
+                        logger=logger
+                    )
+                    
+                    # Get scraped content for vision analysis
+                    scraping_results = st.session_state.get('scraping_results', {})
+                    scraped_pages = scraping_results.get('scraped_pages', [])
+                    
+                    if scraped_pages:
+                        # Get country context for vision analysis
+                        country_context = country_localization.get_competitor_context(country_code)
+                        
+                        # Perform vision analysis
+                        vision_analysis = vision_analyzer.analyze_competitor_vision(
+                            competitor_name=competitor_name,
+                            scraped_content=scraped_pages,
+                            country_context=country_context
+                        )
+                        
+                        # Store results in session state
+                        st.session_state.vision_analysis = vision_analysis
+                        
+                        # Log vision analysis summary
+                        logger.info(f"Vision analysis completed for {competitor_name}")
+                        logger.info(f"Product roadmap signals: {len(vision_analysis.get('product_roadmap', {}).get('upcoming_features', []))}")
+                        logger.info(f"Technology investment areas: {len(vision_analysis.get('technology_investments', {}).get('investment_areas', []))}")
+                        logger.info(f"Market expansion signals: {len(vision_analysis.get('market_expansion', {}).get('geographic_targets', []))}")
+                        logger.info(f"Strategic partnerships: {len(vision_analysis.get('strategic_partnerships', {}).get('partnership_opportunities', []))}")
+                        logger.info(f"Hiring growth areas: {len(vision_analysis.get('hiring_patterns', {}).get('growth_areas', []))}")
+                        
+                    else:
+                        logger.info("No scraped content available for vision analysis")
+                        st.session_state.vision_analysis = None
+                        
+                except Exception as e:
+                    logger.error(f"Error during vision analysis: {str(e)}")
+                    st.warning(f"Vision analysis failed: {str(e)} - continuing with available analysis")
+                    st.session_state.vision_analysis = None
+            else:
+                # Set empty results if prerequisite phases are skipped
+                st.session_state.vision_analysis = None
+                logger.info("Vision analysis skipped - no scraped content available")
+            
+            # Phase 4: Google Search for Social Media Complaints
+            if phase4_enabled:
+                current_phase += 1
+                progress_percent = int((current_phase / total_phases) * 100)
+                status_text.text(f'🔍 Phase 4: Searching for social media complaints... ({current_phase}/{total_phases})')
+                progress_bar.progress(progress_percent)
+                
+                try:
+                    # Initialize Google search scraper
+                    google_scraper = GoogleSearchScraper(config)
+                    
+                    # Search for competitor complaints
+                    complaint_search_results = google_scraper.search_competitor_complaints(
+                        competitor_name, 
+                        country_code
+                    )
+                    
+                    # Analyze complaint patterns
+                    complaint_analysis = analyze_complaint_patterns(complaint_search_results)
+                    
+                    # Store results in session state
+                    st.session_state.complaint_search_results = complaint_search_results
+                    st.session_state.complaint_analysis = complaint_analysis
+                    
+                    # Log complaint search summary
+                    logger.info(f"Google search completed for {competitor_name}")
+                    logger.info(f"Total complaints found: {complaint_analysis['total_complaints']}")
+                    logger.info(f"Platforms searched: {list(complaint_search_results['platforms'].keys())}")
+                    
+                except Exception as e:
+                    logger.error(f"Error during Google search: {str(e)}")
+                    st.warning(f"Google search failed: {str(e)} - continuing with basic analysis")
+                    # Set empty results so the analysis can continue
+                    st.session_state.complaint_search_results = {'platforms': {}, 'summary': {'total_results': 0}}
+                    st.session_state.complaint_analysis = {'total_complaints': 0, 'platforms': {}}
+            else:
+                # Set empty results if Phase 4 is skipped
+                st.session_state.complaint_search_results = {'platforms': {}, 'summary': {'total_results': 0}}
+                st.session_state.complaint_analysis = {'total_complaints': 0, 'platforms': {}}
+                logger.info("Phase 4 (Google Search) skipped")
+            
+            # Phase 5: Social Media Scraping
+            if phase5_enabled:
+                current_phase += 1
+                progress_percent = int((current_phase / total_phases) * 100)
+                status_text.text(f'🔍 Phase 5: Scraping social media content... ({current_phase}/{total_phases})')
+                progress_bar.progress(progress_percent)
+                
+                complaint_search_results = st.session_state.get('complaint_search_results', {})
+                
+                if complaint_search_results.get('summary', {}).get('total_results', 0) > 0:
+                    try:
+                        # Create URLs list from search results
+                        social_urls = create_social_media_urls_from_search_results(complaint_search_results)
+                        
+                        # Limit URLs to prevent excessive scraping
+                        max_social_urls = 20
+                        if len(social_urls) > max_social_urls:
+                            # Prioritize by complaint score
+                            social_urls = sorted(social_urls, key=lambda x: x.get('complaint_score', 0), reverse=True)
+                            social_urls = social_urls[:max_social_urls]
+                        
+                        if social_urls:
+                            # Initialize social media scraper
+                            social_scraper = SocialMediaScraper(config)
                             
-                            try:
-                                # Create URLs list from search results
-                                social_urls = create_social_media_urls_from_search_results(complaint_search_results)
-                                
-                                # Limit URLs to prevent excessive scraping
-                                max_social_urls = 20
-                                if len(social_urls) > max_social_urls:
-                                    # Prioritize by complaint score
-                                    social_urls = sorted(social_urls, key=lambda x: x.get('complaint_score', 0), reverse=True)
-                                    social_urls = social_urls[:max_social_urls]
-                                
-                                if social_urls:
-                                    # Initialize social media scraper
-                                    social_scraper = SocialMediaScraper(config)
-                                    
-                                    # Scrape social media content
-                                    social_scraping_results = social_scraper.scrape_social_media_urls(
-                                        social_urls, 
-                                        country_code
-                                    )
-                                    
-                                    # Analyze social media content
-                                    social_content_analysis = analyze_social_media_content(social_scraping_results)
-                                    
-                                    # Store results in session state
-                                    st.session_state.social_scraping_results = social_scraping_results
-                                    st.session_state.social_content_analysis = social_content_analysis
-                                    
-                                    # Cleanup resources
-                                    social_scraper.cleanup()
-                                    
-                                    # Log social media scraping summary
-                                    logger.info(f"Social media scraping completed for {competitor_name}")
-                                    logger.info(f"Total content pieces found: {social_content_analysis['total_content_pieces']}")
-                                    logger.info(f"Platforms scraped: {list(social_content_analysis['platforms'].keys())}")
-                                    
-                                else:
-                                    logger.info("No social media URLs found for scraping")
-                                    # Set empty results
-                                    st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
-                                    st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
-                                    
-                            except Exception as e:
-                                logger.error(f"Error during social media scraping: {str(e)}")
-                                st.warning(f"Social media scraping failed: {str(e)} - continuing with available analysis")
-                                # Set empty results so the analysis can continue
-                                st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
-                                st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
-                        
+                            # Scrape social media content
+                            social_scraping_results = social_scraper.scrape_social_media_urls(
+                                social_urls, 
+                                country_code
+                            )
+                            
+                            # Analyze social media content
+                            social_content_analysis = analyze_social_media_content(social_scraping_results)
+                            
+                            # Store results in session state
+                            st.session_state.social_scraping_results = social_scraping_results
+                            st.session_state.social_content_analysis = social_content_analysis
+                            
+                            # Cleanup resources
+                            social_scraper.cleanup()
+                            
+                            # Log social media scraping summary
+                            logger.info(f"Social media scraping completed for {competitor_name}")
+                            logger.info(f"Total content pieces found: {social_content_analysis['total_content_pieces']}")
+                            logger.info(f"Platforms scraped: {list(social_content_analysis['platforms'].keys())}")
+                            
                         else:
-                            # Set empty results if social media analysis is not enabled
+                            logger.info("No social media URLs found for scraping")
                             st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
                             st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
-                        
+                            
                     except Exception as e:
-                        logger.error(f"Error during Google search: {str(e)}")
-                        st.warning(f"Google search failed: {str(e)} - continuing with basic analysis")
-                        # Set empty results so the analysis can continue
-                        st.session_state.complaint_search_results = {'platforms': {}, 'summary': {'total_results': 0}}
-                        st.session_state.complaint_analysis = {'total_complaints': 0, 'platforms': {}}
+                        logger.error(f"Error during social media scraping: {str(e)}")
+                        st.warning(f"Social media scraping failed: {str(e)} - continuing with available analysis")
                         st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
                         st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
-                
-                # Phase 6: Complaint Categorization (New!)
-                progress_bar.progress(90)
-                status_text.text('🤖 Categorizing complaints with AI...')
+                else:
+                    logger.info("No complaint search results available for social media scraping")
+                    st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
+                    st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
+            else:
+                # Set empty results if Phase 5 is skipped
+                st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
+                st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
+                logger.info("Phase 5 (Social Media Scraping) skipped")
+            
+            # Phase 6: Complaint Categorization
+            if phase6_enabled:
+                current_phase += 1
+                progress_percent = int((current_phase / total_phases) * 100)
+                status_text.text(f'🤖 Phase 6: Categorizing complaints with AI... ({current_phase}/{total_phases})')
+                progress_bar.progress(progress_percent)
                 
                 # Check if we have OpenAI API key and complaints to categorize
                 if config.openai_api_key and (st.session_state.get('complaint_analysis', {}).get('total_complaints', 0) > 0 or 
@@ -516,31 +801,39 @@ def analysis_tab():
                         logger.info("No complaints found for categorization")
                     st.session_state.categorized_complaints = []
                     st.session_state.categorization_report = None
-                
-                progress_bar.progress(95)
-                status_text.text('✅ Finalizing analysis...')
-                
-                # Count total discovered URLs
-                total_urls = sum(len(urls) for urls in discovered_urls.values())
-                scraped_count = len(scraping_results['scraped_pages'])
-                
-                progress_bar.progress(100)
-                status_text.text('🎉 Analysis completed!')
-                
-                st.session_state.analysis_status = "Completed"
-                
-                # Show results summary
-                st.success(f"Analysis completed! Found {total_urls} URLs and scraped {scraped_count} key pages.")
-                
-                # Display quick summary
-                with st.expander("📋 Quick Summary", expanded=True):
+            else:
+                # Set empty results if Phase 6 is skipped
+                st.session_state.categorized_complaints = []
+                st.session_state.categorization_report = None
+                logger.info("Phase 6 (AI Categorization) skipped")
+            
+            progress_bar.progress(100)
+            status_text.text('🎉 Analysis completed!')
+            
+            st.session_state.analysis_status = "Completed"
+            
+            # Show results summary
+            phases_completed = [f"Phase {i+1}" for i, enabled in enumerate([phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled]) if enabled]
+            st.success(f"Analysis completed! Ran {len(phases_completed)} phases: {', '.join(phases_completed)}")
+            
+            # Display quick summary
+            with st.expander("📋 Quick Summary", expanded=True):
+                if phase1_enabled:
+                    discovered_urls = st.session_state.get('discovered_urls', {})
+                    total_urls = sum(len(urls) for urls in discovered_urls.values())
+                    
                     col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
                         st.metric("Total URLs Found", total_urls)
                     
                     with col2:
-                        st.metric("Pages Scraped", scraped_count)
+                        if phase2_enabled:
+                            scraping_results = st.session_state.get('scraping_results', {})
+                            scraped_count = len(scraping_results.get('scraped_pages', []))
+                            st.metric("Pages Scraped", scraped_count)
+                        else:
+                            st.metric("Pages Scraped", "Skipped")
                     
                     with col3:
                         pricing_count = len(discovered_urls.get('pricing', []))
@@ -551,11 +844,13 @@ def analysis_tab():
                         st.metric("Features Pages", features_count)
                     
                     # Show scraping success rate
-                    success_rate = scraping_results['summary']['success_rate']
-                    st.metric("Scraping Success Rate", f"{success_rate:.1f}%")
-                    
+                    if phase2_enabled:
+                        scraping_results = st.session_state.get('scraping_results', {})
+                        success_rate = scraping_results.get('summary', {}).get('success_rate', 0)
+                        st.metric("Scraping Success Rate", f"{success_rate:.1f}%")
+                
                     # Show complaint analysis results if available
-                    if st.session_state.get('complaint_analysis'):
+                    if phase4_enabled and st.session_state.get('complaint_analysis'):
                         complaint_analysis = st.session_state.complaint_analysis
                         st.markdown("#### Social Media Complaints Analysis")
                         
@@ -578,7 +873,7 @@ def analysis_tab():
                                 st.metric("Max Complaint Score", "N/A")
                         
                         # Show AI categorization results if available
-                        if st.session_state.get('categorization_report'):
+                        if phase6_enabled and st.session_state.get('categorization_report'):
                             categorization_report = st.session_state.categorization_report
                             st.markdown("#### AI Categorization Results")
                             
@@ -599,73 +894,35 @@ def analysis_tab():
                                 st.metric("High/Critical Issues", high_critical)
                             
                             with col4:
-                                sentiment_dist = overall_stats.get('sentiment_distribution', {})
-                                negative = sentiment_dist.get('Very Negative', 0) + sentiment_dist.get('Negative', 0)
-                                st.metric("Negative Sentiment", negative)
-                            
-                            # Show category breakdown
-                            if category_dist:
-                                st.markdown("**AI Categories:**")
-                                for category, count in category_dist.items():
-                                    if count > 0:
-                                        st.write(f"• {category}: {count}")
-                        
-                        # Show raw complaint categories (for comparison)
-                        else:
-                            # Show complaint categories
-                            categories = complaint_analysis.get('complaint_categories', {})
-                            if categories:
-                                st.markdown("**Complaint Categories:**")
-                                for category, count in categories.items():
-                                    if count > 0:
-                                        st.write(f"• {category}: {count}")
-                        
-                        # Show social media content analysis if available
-                        if st.session_state.get('social_content_analysis'):
-                            social_analysis = st.session_state.social_content_analysis
-                            if social_analysis.get('total_content_pieces', 0) > 0:
-                                st.markdown("#### Social Media Content Analysis")
-                                
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    st.metric("Content Pieces Found", social_analysis['total_content_pieces'])
-                                
-                                with col2:
-                                    platforms_scraped = len(social_analysis['platforms'])
-                                    st.metric("Platforms Scraped", platforms_scraped)
-                                
-                                with col3:
-                                    # Show content types
-                                    content_types = social_analysis.get('content_types', {})
-                                    total_posts = content_types.get('posts', 0)
-                                    total_comments = content_types.get('comments', 0)
-                                    total_reviews = content_types.get('reviews', 0)
-                                    st.metric("Posts/Comments/Reviews", f"{total_posts}/{total_comments}/{total_reviews}")
-                    
-                    # Show sample of analyzed content
-                    st.write("**Sample Analyzed Content:**")
-                    for page in analyzed_pages[:3]:
-                        category_emoji = {
-                            'pricing': '💰', 'features': '🎯', 'blog': '📰', 
-                            'careers': '💼', 'contact': '📞', 'about': '🏢'
-                        }.get(page['category'], '📄')
-                        
-                        st.write(f"{category_emoji} **{page['title']}** ({page['category']})")
-                        st.write(f"   • Word count: {page['word_count']}")
-                        st.write(f"   • Quality score: {page['quality'].get('completeness_score', 0):.0f}%")
-                        if page['pricing_indicators'].get('currency_symbols'):
-                            st.write(f"   • Pricing found: {', '.join(page['pricing_indicators']['currency_symbols'][:3])}")
-                
-                st.info("Check the Reports tab for detailed analysis results.")
-                
-            except Exception as e:
-                logger.error(f"Error during analysis: {str(e)}")
-                st.error(f"An error occurred during analysis: {str(e)}")
-                st.session_state.analysis_status = "Error"
+                                confidence_dist = overall_stats.get('confidence_distribution', {})
+                                high_confidence = confidence_dist.get('High', 0)
+                                st.metric("High Confidence", high_confidence)
             
+            # Show phase completion status
+            st.markdown("#### Phase Completion Status")
+            phase_status = []
+            phase_names = ["URL Discovery", "Content Scraping", "Content Analysis", "Google Search", "Social Media Scraping", "AI Categorization"]
+            phase_selections = [phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled]
+            
+            for i, (name, enabled) in enumerate(zip(phase_names, phase_selections)):
+                status = "✅ Completed" if enabled else "⏭️ Skipped"
+                phase_status.append(f"Phase {i+1}: {name} - {status}")
+            
+            for status in phase_status:
+                st.markdown(f"• {status}")
+        
+            # Navigation to reports
+            st.markdown("---")
+            st.markdown("### 🎯 Next Steps")
+            st.markdown("Go to the **Reports** tab to view detailed analysis results and export options.")
+                
+        except Exception as e:
+            logger.error(f"Error during analysis: {str(e)}", exc_info=True)
+            st.error(f"An error occurred during analysis: {str(e)}")
+            st.session_state.analysis_status = "Error"
+                
         else:
-            st.error("Please enter both competitor name and URL to start analysis.")
+            st.warning("Please enter both competitor name and URL to start analysis.")
 
 def reports_tab():
     """Reports viewing and export tab"""
@@ -674,39 +931,314 @@ def reports_tab():
     if st.session_state.get('analysis_status') == "Completed":
         st.success("Report ready for viewing")
         
-        # Get discovered URLs from session state
+        # Get data from session state
+        phase_config = st.session_state.get('phase_config', {})
         discovered_urls = st.session_state.get('discovered_urls', {})
         discovery_summary = st.session_state.get('discovery_summary', {})
         scraping_results = st.session_state.get('scraping_results', {})
         analyzed_pages = st.session_state.get('analyzed_pages', [])
         competitor_name = st.session_state.get('current_competitor', 'Unknown')
         
-        # Report sections with real data
-        report_sections = [
-            "📊 Executive Summary",
-            "🔍 URL Discovery Results",
-            "📄 Content Analysis Results",
-            "💰 Pricing Analysis",
-            "🎯 Features Analysis",
-            "🤖 AI Categorized Complaints",
-            "📱 Social Media Complaints",
-            "📰 Blog & News",
-            "💼 Careers Pages",
-            "📞 Contact & Support",
-            "🏢 About Pages"
-        ]
+        # Export functionality
+        st.markdown("### 📤 Export Reports")
         
-        selected_section = st.selectbox("Select Report Section", report_sections)
+        # Initialize export manager
+        export_manager = ExportManager()
+        available_formats = export_manager.get_available_formats()
         
-        st.markdown(f"### {selected_section}")
-        
-        if selected_section == "📊 Executive Summary":
-            st.markdown(f"**Competitor:** {competitor_name}")
-            st.markdown(f"**Website:** {st.session_state.get('current_url', 'Unknown')}")
-            st.markdown(f"**Target Country:** {st.session_state.get('current_country', 'US')}")
-            st.markdown(f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        if available_formats:
+            col1, col2, col3 = st.columns([1, 1, 2])
             
-            # Show country-specific context
+            with col1:
+                selected_format = st.selectbox(
+                    "Export Format",
+                    available_formats,
+                    help="Select the format to export your analysis report"
+                )
+            
+            with col2:
+                if st.button("📥 Export Report", type="primary"):
+                    try:
+                        # Prepare export data
+                        export_data = {
+                            'competitor_name': competitor_name,
+                            'competitor_url': st.session_state.get('current_url', 'Unknown'),
+                            'country': st.session_state.get('current_country', 'US'),
+                            'selected_objective': st.session_state.get('selected_objective', 'General Analysis'),
+                            'phase_config': phase_config,
+                            'discovered_urls': discovered_urls,
+                            'discovery_summary': discovery_summary,
+                            'scraping_results': scraping_results,
+                            'analyzed_pages': analyzed_pages,
+                            'pricing_analysis': st.session_state.get('pricing_analysis'),
+                            'monetization_analysis': st.session_state.get('monetization_analysis'),
+                            'vision_analysis': st.session_state.get('vision_analysis'),
+                            'categorization_report': st.session_state.get('categorization_report'),
+                            'complaint_analysis': st.session_state.get('complaint_analysis')
+                        }
+                        
+                        # Generate export
+                        buffer = export_manager.export_report(selected_format, export_data)
+                        filename = export_manager.get_export_filename(selected_format, competitor_name)
+                        
+                        # Provide download
+                        mime_types = {
+                            'PDF': 'application/pdf',
+                            'Word': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            'Excel': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        }
+                        
+                        st.download_button(
+                            label=f"📥 Download {selected_format} Report",
+                            data=buffer,
+                            file_name=filename,
+                            mime=mime_types.get(selected_format, 'application/octet-stream'),
+                            key="download_report"
+                        )
+                        
+                        st.success(f"✅ {selected_format} report generated successfully!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Export failed: {str(e)}")
+                        st.info("💡 Tip: Make sure required libraries are installed for your chosen format")
+            
+            with col3:
+                # Export format information
+                format_info = {
+                    'PDF': '📄 Professional report with formatted tables and charts',
+                    'Word': '📝 Editable document for collaboration and customization',
+                    'Excel': '📊 Structured data with multiple sheets for analysis'
+                }
+                
+                if selected_format in format_info:
+                    st.info(format_info[selected_format])
+        else:
+            st.warning("⚠️ No export formats available. Please install required libraries:")
+            st.code("""
+# Install export dependencies
+pip install reportlab python-docx openpyxl
+
+# PDF export: reportlab
+# Word export: python-docx  
+# Excel export: openpyxl
+            """)
+        
+        st.markdown("---")
+        
+        # Battlecard Generation
+        st.markdown("### 🎯 Sales Battlecard Generation")
+        
+        # Import battlecard generator
+        from utils.battlecard_generator import BattlecardGenerator
+        
+        # Check if we have sufficient data for battlecard generation
+        has_pricing = bool(st.session_state.get('pricing_analysis'))
+        has_monetization = bool(st.session_state.get('monetization_analysis'))
+        has_vision = bool(st.session_state.get('vision_analysis'))
+        has_complaints = bool(st.session_state.get('categorization_report'))
+        
+        data_completeness = sum([has_pricing, has_monetization, has_vision, has_complaints])
+        
+        if data_completeness >= 2:  # Need at least 2 analysis types
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                if st.button("🎯 Generate Sales Battlecard", type="primary"):
+                    try:
+                        # Initialize battlecard generator
+                        battlecard_generator = BattlecardGenerator()
+                        
+                        # Prepare battlecard data
+                        battlecard_data = {
+                            'competitor_name': competitor_name,
+                            'competitor_url': st.session_state.get('current_url', 'Unknown'),
+                            'country': st.session_state.get('current_country', 'US'),
+                            'selected_objective': st.session_state.get('selected_objective', 'General Analysis'),
+                            'phase_config': phase_config,
+                            'discovered_urls': discovered_urls,
+                            'discovery_summary': discovery_summary,
+                            'scraping_results': scraping_results,
+                            'analyzed_pages': analyzed_pages,
+                            'pricing_analysis': st.session_state.get('pricing_analysis'),
+                            'monetization_analysis': st.session_state.get('monetization_analysis'),
+                            'vision_analysis': st.session_state.get('vision_analysis'),
+                            'categorization_report': st.session_state.get('categorization_report'),
+                            'complaint_analysis': st.session_state.get('complaint_analysis')
+                        }
+                        
+                        # Generate battlecard
+                        with st.spinner("Generating sales battlecard..."):
+                            battlecard = battlecard_generator.generate_battlecard(battlecard_data)
+                            st.session_state.battlecard = battlecard
+                            st.session_state.battlecard_generated = True
+                        
+                        st.success("✅ Sales battlecard generated successfully!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Battlecard generation failed: {str(e)}")
+                        st.info("💡 Tip: Ensure you have sufficient analysis data for battlecard generation")
+            
+            with col2:
+                st.info(f"📊 Data completeness: {data_completeness}/4 analysis types available")
+                
+                # Show data availability
+                data_status = {
+                    "💰 Pricing Analysis": "✅ Available" if has_pricing else "❌ Missing",
+                    "💼 Monetization Analysis": "✅ Available" if has_monetization else "❌ Missing",
+                    "🔮 Vision Analysis": "✅ Available" if has_vision else "❌ Missing",
+                    "📱 Complaint Analysis": "✅ Available" if has_complaints else "❌ Missing"
+                }
+                
+                for analysis_type, status in data_status.items():
+                    st.markdown(f"**{analysis_type}**: {status}")
+        else:
+            st.warning("⚠️ Insufficient data for battlecard generation. Need at least 2 analysis types.")
+            st.info("💡 Run more analysis phases to enable battlecard generation")
+        
+        # Display generated battlecard
+        if st.session_state.get('battlecard_generated', False) and st.session_state.get('battlecard'):
+            st.markdown("---")
+            st.markdown("### 📋 Generated Sales Battlecard")
+            
+            battlecard = st.session_state.battlecard
+            
+            # Battlecard header
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Competitive Position", battlecard.competitive_position)
+            
+            with col2:
+                threat_color = {'low': '🟢', 'medium': '🟡', 'high': '🔴'}.get(battlecard.threat_level, '⚪')
+                st.metric("Threat Level", f"{threat_color} {battlecard.threat_level.title()}")
+            
+            with col3:
+                st.metric("Confidence Score", f"{battlecard.confidence_score:.2f}")
+            
+            # Executive Summary
+            st.markdown("#### Executive Summary")
+            st.info(battlecard.executive_summary)
+            
+            # Key battlecard sections in expandable format
+            battlecard_sections = [
+                (battlecard.positioning_advantages, "🎯"),
+                (battlecard.objection_handling, "💬"),
+                (battlecard.talking_points, "🗣️"),
+                (battlecard.pricing_strategy, "💰"),
+                (battlecard.competitive_weaknesses, "⚠️"),
+                (battlecard.sales_strategy, "📈"),
+                (battlecard.qualifying_questions, "❓"),
+                (battlecard.demo_focus_areas, "🎪")
+            ]
+            
+            for section, emoji in battlecard_sections:
+                with st.expander(f"{emoji} {section.title}", expanded=False):
+                    for item in section.content:
+                        if item.strip():  # Skip empty lines
+                            st.markdown(item)
+            
+            # Export battlecard
+            st.markdown("#### Export Battlecard")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Export as Markdown
+                markdown_content = battlecard_generator.export_battlecard_markdown(battlecard)
+                st.download_button(
+                    label="📝 Download Markdown",
+                    data=markdown_content,
+                    file_name=f"battlecard_{competitor_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.md",
+                    mime="text/markdown"
+                )
+            
+            with col2:
+                # Export as JSON
+                json_content = battlecard_generator.export_battlecard_json(battlecard)
+                st.download_button(
+                    label="📊 Download JSON",
+                    data=json_content,
+                    file_name=f"battlecard_{competitor_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
+            
+            # Show metadata
+            with st.expander("📋 Battlecard Metadata"):
+                st.markdown(f"**Data Sources:** {', '.join(battlecard.data_sources)}")
+                st.markdown(f"**Analysis Completeness:** {sum(battlecard.analysis_completeness.values())}/{len(battlecard.analysis_completeness)} modules")
+                st.markdown(f"**Last Updated:** {battlecard.last_updated}")
+        
+        st.markdown("---")
+        
+        # Create tabs for better organization
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📊 Overview", 
+            "🔍 Technical Analysis", 
+            "💰 Business Intelligence",
+            "📱 Competitive Intelligence", 
+            "📄 Content Insights"
+        ])
+        
+        # Tab 1: Overview (Executive Summary)
+        with tab1:
+            st.markdown("### Executive Summary")
+            
+            # Basic competitor info
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Competitor:** {competitor_name}")
+                st.markdown(f"**Website:** {st.session_state.get('current_url', 'Unknown')}")
+                st.markdown(f"**Target Country:** {st.session_state.get('current_country', 'US')}")
+                st.markdown(f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+                
+                # Show selected objective
+                if st.session_state.get('selected_objective'):
+                    st.markdown(f"**Analysis Objective:** {st.session_state.get('selected_objective')}")
+            
+            with col2:
+                # Show enabled phases
+                if phase_config:
+                    st.markdown("**Analysis Phases Executed:**")
+                    phase_names = ["URL Discovery", "Content Scraping", "Content Analysis", "Google Search", "Social Media Scraping", "AI Categorization"]
+                    phase_keys = ["phase1_enabled", "phase2_enabled", "phase3_enabled", "phase4_enabled", "phase5_enabled", "phase6_enabled"]
+                    
+                    for i, (name, key) in enumerate(zip(phase_names, phase_keys)):
+                        enabled = phase_config.get(key, True)
+                        status = "✅" if enabled else "⏭️"
+                        st.markdown(f"{status} Phase {i+1}: {name}")
+            
+            # Key metrics
+            st.markdown("#### Key Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                if phase_config.get('phase1_enabled', True):
+                    total_urls = discovery_summary.get('total_urls_found', 0)
+                    st.metric("Total URLs Found", total_urls)
+                else:
+                    st.metric("Total URLs Found", "Phase Skipped")
+            
+            with col2:
+                if phase_config.get('phase1_enabled', True):
+                    pricing_count = len(discovered_urls.get('pricing', []))
+                    st.metric("Pricing Pages", pricing_count)
+                else:
+                    st.metric("Pricing Pages", "Phase Skipped")
+            
+            with col3:
+                if phase_config.get('phase1_enabled', True):
+                    features_count = len(discovered_urls.get('features', []))
+                    st.metric("Features Pages", features_count)
+                else:
+                    st.metric("Features Pages", "Phase Skipped")
+            
+            with col4:
+                if phase_config.get('phase1_enabled', True):
+                    blog_count = len(discovered_urls.get('blog', []))
+                    st.metric("Blog/News Pages", blog_count)
+                else:
+                    st.metric("Blog/News Pages", "Phase Skipped")
+            
+            # Country-specific context
             if st.session_state.get('current_country'):
                 country_context = country_localization.get_competitor_context(st.session_state.current_country)
                 
@@ -717,26 +1249,8 @@ def reports_tab():
                     st.markdown(f"**Review Sites:** {', '.join(country_context['review_sites'][:3])}")
                     st.markdown(f"**Search Domain:** {country_context['google_domain']}")
             
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                total_urls = discovery_summary.get('total_urls_found', 0)
-                st.metric("Total URLs Found", total_urls)
-            
-            with col2:
-                pricing_count = len(discovered_urls.get('pricing', []))
-                st.metric("Pricing Pages", pricing_count)
-            
-            with col3:
-                features_count = len(discovered_urls.get('features', []))
-                st.metric("Features Pages", features_count)
-            
-            with col4:
-                blog_count = len(discovered_urls.get('blog', []))
-                st.metric("Blog/News Pages", blog_count)
-            
             # URL distribution chart
-            if discovered_urls:
+            if phase_config.get('phase1_enabled', True) and discovered_urls:
                 st.markdown("#### URL Distribution by Category")
                 
                 categories = []
@@ -750,1011 +1264,579 @@ def reports_tab():
                     import pandas as pd
                     df = pd.DataFrame({'Category': categories, 'Count': counts})
                     st.bar_chart(df.set_index('Category'))
+            elif not phase_config.get('phase1_enabled', True):
+                st.info("📊 URL distribution chart not available - URL Discovery phase was skipped")
         
-        elif selected_section == "🔍 URL Discovery Results":
-            st.markdown("#### Complete URL Discovery Summary")
+        # Tab 2: Technical Analysis
+        with tab2:
+            st.markdown("### Technical Analysis")
             
-            if discovery_summary:
-                st.json(discovery_summary)
+            # URL Discovery Results
+            st.markdown("#### 🔍 URL Discovery Results")
+            if not phase_config.get('phase1_enabled', True):
+                st.warning("⏭️ URL Discovery phase was skipped. No results available.")
             else:
-                st.info("No discovery summary available.")
-        
-        elif selected_section == "📄 Content Analysis Results":
-            st.markdown("#### Scraped Content Analysis")
-            
-            if scraping_results and analyzed_pages:
-                # Scraping summary
-                summary = scraping_results.get('summary', {})
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Pages Scraped", summary.get('successful', 0))
-                
-                with col2:
-                    st.metric("Success Rate", f"{summary.get('success_rate', 0):.1f}%")
-                
-                with col3:
-                    avg_quality = sum(page['quality'].get('completeness_score', 0) for page in analyzed_pages) / len(analyzed_pages) if analyzed_pages else 0
-                    st.metric("Avg Quality Score", f"{avg_quality:.1f}%")
-                
-                # Content quality analysis
-                st.markdown("#### Content Quality Analysis")
-                
-                quality_data = []
-                for page in analyzed_pages:
-                    quality = page['quality']
-                    quality_data.append({
-                        'Page': page['title'][:50] + '...' if len(page['title']) > 50 else page['title'],
-                        'Category': page['category'],
-                        'Completeness': quality.get('completeness_score', 0),
-                        'Content Richness': quality.get('content_richness', 0),
-                        'Structure Quality': quality.get('structure_quality', 0),
-                        'Word Count': page['word_count']
-                    })
-                
-                if quality_data:
-                    import pandas as pd
-                    df = pd.DataFrame(quality_data)
-                    st.dataframe(df)
-                
-                # Detailed page analysis
-                st.markdown("#### Detailed Page Analysis")
-                
-                for page in analyzed_pages:
-                    category_emoji = {
-                        'pricing': '💰', 'features': '🎯', 'blog': '📰', 
-                        'careers': '💼', 'contact': '📞', 'about': '🏢'
-                    }.get(page['category'], '📄')
+                if discovery_summary:
+                    # Show discovery stats
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Discovery Strategies", discovery_summary.get('strategies_used', 0))
+                    with col2:
+                        st.metric("Success Rate", f"{discovery_summary.get('success_rate', 0):.1f}%")
+                    with col3:
+                        st.metric("Total Time", f"{discovery_summary.get('total_time', 0):.1f}s")
                     
-                    with st.expander(f"{category_emoji} {page['title']} ({page['category']})"):
-                        st.markdown(f"**URL:** {page['url']}")
-                        st.markdown(f"**Word Count:** {page['word_count']}")
-                        st.markdown(f"**Quality Score:** {page['quality'].get('completeness_score', 0):.1f}%")
-                        
-                        if page['meta_description']:
-                            st.markdown(f"**Meta Description:** {page['meta_description']}")
-                        
-                        # Show headings structure
-                        headings = page['headings']
-                        if any(headings.values()):
-                            st.markdown("**Page Structure:**")
-                            for level, heading_list in headings.items():
-                                if heading_list:
-                                    st.markdown(f"- {level.upper()}: {', '.join(heading_list[:3])}")
-                        
-                        # Show pricing indicators
-                        pricing = page['pricing_indicators']
-                        if pricing.get('currency_symbols') or pricing.get('pricing_terms'):
-                            st.markdown("**Pricing Information:**")
-                            if pricing.get('currency_symbols'):
-                                st.markdown(f"- Currency symbols found: {', '.join(pricing['currency_symbols'][:5])}")
-                            if pricing.get('pricing_terms'):
-                                st.markdown(f"- Pricing terms: {', '.join(pricing['pricing_terms'][:5])}")
-                        
-                        # Show feature lists
-                        features = page['feature_lists']
-                        if features:
-                            st.markdown("**Features/Benefits:**")
-                            for feature in features[:5]:
-                                st.markdown(f"- {feature}")
-                        
-                        # Show contact information
-                        contact = page['contact_info']
-                        if contact.get('emails') or contact.get('phones'):
-                            st.markdown("**Contact Information:**")
-                            if contact.get('emails'):
-                                st.markdown(f"- Emails: {', '.join(contact['emails'][:3])}")
-                            if contact.get('phones'):
-                                st.markdown(f"- Phones: {', '.join(contact['phones'][:3])}")
-                        
-                        # Quality issues
-                        issues = page['quality'].get('issues', [])
-                        if issues:
-                            st.markdown("**Quality Issues:**")
-                            for issue in issues:
-                                st.markdown(f"- ⚠️ {issue}")
-                        
-                        st.markdown(f"[🔗 Visit Page]({page['url']})")
-                
+                    with st.expander("View Complete Discovery Summary"):
+                        st.json(discovery_summary)
+                else:
+                    st.info("No discovery summary available.")
+            
+            # Content Analysis Results
+            st.markdown("#### 📄 Content Analysis Results")
+            if not phase_config.get('phase2_enabled', True):
+                st.warning("⏭️ Content Scraping phase was skipped. No results available.")
             else:
-                st.info("No content analysis results available. Run an analysis first.")
-        
-        elif selected_section == "💰 Pricing Analysis":
-            st.markdown("#### Pricing Intelligence")
-            
-            if analyzed_pages:
-                # Filter pages with pricing information
-                pricing_pages = [page for page in analyzed_pages if page['category'] == 'pricing' or page['pricing_indicators'].get('currency_symbols')]
-                
-                if pricing_pages:
-                    st.markdown(f"Found **{len(pricing_pages)}** pages with pricing information:")
-                    
-                    # Aggregate pricing data
-                    all_currencies = set()
-                    all_pricing_terms = set()
-                    
-                    for page in pricing_pages:
-                        pricing = page['pricing_indicators']
-                        if pricing.get('currency_symbols'):
-                            all_currencies.update(pricing['currency_symbols'])
-                        if pricing.get('pricing_terms'):
-                            all_pricing_terms.update(pricing['pricing_terms'])
-                    
-                    # Display pricing summary
-                    col1, col2 = st.columns(2)
+                if scraping_results and analyzed_pages:
+                    # Scraping summary
+                    summary = scraping_results.get('summary', {})
+                    col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.markdown("**Currency Symbols Found:**")
-                        for currency in sorted(all_currencies):
-                            st.markdown(f"- {currency}")
+                        st.metric("Pages Scraped", summary.get('successful', 0))
                     
                     with col2:
-                        st.markdown("**Pricing Terms Found:**")
-                        for term in sorted(all_pricing_terms):
-                            st.markdown(f"- {term}")
-                    
-                    # Show detailed pricing pages
-                    st.markdown("#### Detailed Pricing Pages")
-                    
-                    for page in pricing_pages:
-                        with st.expander(f"💰 {page['title']}"):
-                            st.markdown(f"**URL:** {page['url']}")
-                            st.markdown(f"**Word Count:** {page['word_count']}")
-                            
-                            pricing = page['pricing_indicators']
-                            if pricing.get('currency_symbols'):
-                                st.markdown(f"**Prices Found:** {', '.join(pricing['currency_symbols'][:10])}")
-                            if pricing.get('pricing_terms'):
-                                st.markdown(f"**Pricing Terms:** {', '.join(pricing['pricing_terms'][:10])}")
-                            
-                            # Show feature lists from pricing pages
-                            features = page['feature_lists']
-                            if features:
-                                st.markdown("**Features/Plans:**")
-                                for feature in features[:8]:
-                                    st.markdown(f"- {feature}")
-                            
-                            st.markdown(f"[🔗 Visit Page]({page['url']})")
-                
-                else:
-                    st.info("No pricing pages found in the scraped content.")
-            else:
-                st.info("No pricing analysis available. Run a content analysis first.")
-        
-        elif selected_section == "🎯 Features Analysis":
-            st.markdown("#### Features Intelligence")
-            
-            if analyzed_pages:
-                # Filter pages with feature information
-                feature_pages = [page for page in analyzed_pages if page['category'] == 'features' or len(page['feature_lists']) > 3]
-                
-                if feature_pages:
-                    st.markdown(f"Found **{len(feature_pages)}** pages with feature information:")
-                    
-                    # Aggregate all features
-                    all_features = []
-                    for page in feature_pages:
-                        all_features.extend(page['feature_lists'])
-                    
-                    # Display features summary
-                    st.markdown(f"**Total Features Found:** {len(all_features)}")
-                    
-                    # Show top features (most common)
-                    if all_features:
-                        from collections import Counter
-                        feature_counts = Counter(all_features)
-                        top_features = feature_counts.most_common(10)
-                        
-                        st.markdown("**Top Features (by frequency):**")
-                        for feature, count in top_features:
-                            st.markdown(f"- {feature} (mentioned {count} times)")
-                    
-                    # Show detailed feature pages
-                    st.markdown("#### Detailed Feature Pages")
-                    
-                    for page in feature_pages:
-                        with st.expander(f"🎯 {page['title']}"):
-                            st.markdown(f"**URL:** {page['url']}")
-                            st.markdown(f"**Word Count:** {page['word_count']}")
-                            
-                            # Show headings structure
-                            headings = page['headings']
-                            if headings.get('h1') or headings.get('h2'):
-                                st.markdown("**Page Structure:**")
-                                if headings.get('h1'):
-                                    st.markdown(f"- H1: {', '.join(headings['h1'])}")
-                                if headings.get('h2'):
-                                    st.markdown(f"- H2: {', '.join(headings['h2'][:5])}")
-                            
-                            # Show feature lists
-                            features = page['feature_lists']
-                            if features:
-                                st.markdown("**Features/Capabilities:**")
-                                for feature in features[:10]:
-                                    st.markdown(f"- {feature}")
-                            
-                            st.markdown(f"[🔗 Visit Page]({page['url']})")
-                
-                else:
-                    st.info("No feature pages found in the scraped content.")
-            else:
-                st.info("No features analysis available. Run a content analysis first.")
-        
-        elif selected_section == "🤖 AI Categorized Complaints":
-            st.markdown("#### AI Categorized Complaints Analysis")
-            
-            categorized_complaints = st.session_state.get('categorized_complaints', [])
-            categorization_report = st.session_state.get('categorization_report', None)
-            
-            if categorized_complaints:
-                st.markdown("### 🤖 AI-Powered Complaint Categorization")
-                
-                # Executive Summary
-                with st.expander("📋 Executive Summary", expanded=True):
-                    st.markdown(categorization_report.get('executive_summary', 'No executive summary available'))
-                
-                # Overall Statistics
-                overall_stats = categorization_report.get('overall_statistics', {})
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Total Categorized", overall_stats.get('total_complaints', 0))
-                
-                with col2:
-                    category_count = len(overall_stats.get('category_distribution', {}))
-                    st.metric("Categories Found", category_count)
-                
-                with col3:
-                    # Show most severe complaints
-                    severity_dist = overall_stats.get('severity_distribution', {})
-                    high_critical = severity_dist.get('High', 0) + severity_dist.get('Critical', 0)
-                    st.metric("High/Critical Issues", high_critical)
-                
-                with col4:
-                    # Show most negative sentiment
-                    sentiment_dist = overall_stats.get('sentiment_distribution', {})
-                    negative = sentiment_dist.get('Very Negative', 0) + sentiment_dist.get('Negative', 0)
-                    st.metric("Negative Sentiment", negative)
-                
-                # Category Distribution Chart
-                st.markdown("#### Complaint Categories Distribution")
-                category_dist = overall_stats.get('category_distribution', {})
-                if category_dist:
-                    import pandas as pd
-                    cat_data = []
-                    for category, count in category_dist.items():
-                        if count > 0:
-                            cat_data.append({'Category': category, 'Count': count})
-                    
-                    if cat_data:
-                        df = pd.DataFrame(cat_data)
-                        st.bar_chart(df.set_index('Category'))
-                
-                # Detailed Category Analysis
-                st.markdown("#### Detailed Category Analysis")
-                category_analyses = categorization_report.get('category_analyses', {})
-                
-                for category, analysis in category_analyses.items():
-                    with st.expander(f"{category} - {analysis['total_complaints']} complaints"):
-                        st.markdown(f"**Total Complaints:** {analysis['total_complaints']}")
-                        
-                        # Severity breakdown
-                        st.markdown("**Severity Distribution:**")
-                        severity_breakdown = analysis['severity_distribution']
-                        for severity, count in severity_breakdown.items():
-                            if count > 0:
-                                st.markdown(f"- {severity}: {count}")
-                        
-                        # Top keywords
-                        st.markdown("**Common Keywords:**")
-                        for keyword, count in analysis['common_keywords'][:5]:
-                            st.markdown(f"- {keyword}: {count}")
-                        
-                        # Trend analysis
-                        st.markdown("**Trend Analysis:**")
-                        st.markdown(analysis['trend_analysis'])
-                        
-                        # Top complaints in this category
-                        st.markdown("**Top Complaints:**")
-                        for i, complaint in enumerate(analysis['top_complaints'][:3], 1):
-                            st.markdown(f"{i}. **{complaint['summary']}** (Severity: {complaint['severity']}, Confidence: {complaint['confidence']:.2f})")
-                            st.markdown(f"   Source: {complaint['source']} | Platform: {complaint['platform']}")
-                        
-                        # Actionable insights
-                        if analysis['actionable_insights']:
-                            st.markdown("**Actionable Insights:**")
-                            for insight in analysis['actionable_insights'][:3]:
-                                st.markdown(f"- {insight}")
-                        
-                        # Recommendations
-                        if analysis['recommendations']:
-                            st.markdown("**Recommendations for StoreHub:**")
-                            for rec in analysis['recommendations'][:3]:
-                                st.markdown(f"- {rec}")
-                
-                # Top Weaknesses Across All Categories
-                st.markdown("#### Top Competitor Weaknesses")
-                top_weaknesses = categorization_report.get('top_weaknesses', [])
-                if top_weaknesses:
-                    for i, weakness in enumerate(top_weaknesses[:5], 1):
-                        st.markdown(f"{i}. {weakness}")
-                
-                # Platform Distribution
-                st.markdown("#### Platform Distribution")
-                platform_dist = overall_stats.get('platform_distribution', {})
-                if platform_dist:
-                    import pandas as pd
-                    platform_data = []
-                    for platform, count in platform_dist.items():
-                        if count > 0:
-                            platform_data.append({'Platform': platform, 'Count': count})
-                    
-                    if platform_data:
-                        df = pd.DataFrame(platform_data)
-                        st.bar_chart(df.set_index('Platform'))
-                
-                # Sentiment Analysis
-                st.markdown("#### Sentiment Analysis")
-                sentiment_dist = overall_stats.get('sentiment_distribution', {})
-                if sentiment_dist:
-                    import pandas as pd
-                    sent_data = []
-                    for sentiment, count in sentiment_dist.items():
-                        if count > 0:
-                            sent_data.append({'Sentiment': sentiment, 'Count': count})
-                    
-                    if sent_data:
-                        df = pd.DataFrame(sent_data)
-                        st.bar_chart(df.set_index('Sentiment'))
-                
-                # Raw categorized complaints
-                with st.expander("📝 View All Categorized Complaints"):
-                    for i, complaint in enumerate(categorized_complaints, 1):
-                        st.markdown(f"**{i}. {complaint.category} - {complaint.subcategory}**")
-                        st.markdown(f"*Severity: {complaint.severity} | Confidence: {complaint.confidence:.2f} | Sentiment: {complaint.sentiment}*")
-                        st.markdown(f"**Summary:** {complaint.summary}")
-                        st.markdown(f"**Source:** {complaint.source} | **Platform:** {complaint.platform}")
-                        st.markdown(f"**Keywords:** {', '.join(complaint.keywords)}")
-                        st.markdown(f"**StoreHub Opportunity:** {complaint.actionable_insight}")
-                        st.markdown("---")
-                
-                st.markdown("---")
-            
-            # Show raw Google search results as secondary information
-            if st.session_state.get('complaint_analysis'):
-                complaint_analysis = st.session_state.complaint_analysis
-                st.markdown("### 🔍 Raw Search Results")
-                
-                with st.expander("View Raw Google Search Results", expanded=False):
-                    # Overall metrics
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Total Complaints", complaint_analysis['total_complaints'])
-                    
-                    with col2:
-                        platforms_searched = len(complaint_analysis['platforms'])
-                        st.metric("Platforms Searched", platforms_searched)
+                        st.metric("Success Rate", f"{summary.get('success_rate', 0):.1f}%")
                     
                     with col3:
-                        # Calculate average complaint score
-                        top_complaints = complaint_analysis.get('top_complaints', [])
-                        if top_complaints:
-                            avg_score = sum(c.get('complaint_score', 0) for c in top_complaints) / len(top_complaints)
-                            st.metric("Avg Complaint Score", f"{avg_score:.2f}")
+                        if phase_config.get('phase3_enabled', True):
+                            avg_quality = sum(page['quality'].get('completeness_score', 0) for page in analyzed_pages) / len(analyzed_pages) if analyzed_pages else 0
+                            st.metric("Avg Quality Score", f"{avg_quality:.1f}%")
                         else:
-                            st.metric("Avg Complaint Score", "N/A")
+                            st.metric("Avg Quality Score", "Phase 3 Skipped")
                     
-                    with col4:
-                        # Show search success rate
-                        search_summary = complaint_analysis.get('summary', {})
-                        success_rate = search_summary.get('success_rate', 0)
-                        st.metric("Search Success Rate", f"{success_rate:.1f}%")
-                    
-                    # Complaint categories breakdown
-                    st.markdown("#### Complaint Categories")
-                    categories = complaint_analysis.get('complaint_categories', {})
-                    if categories:
-                        # Create dataframe for chart
-                        import pandas as pd
-                        cat_data = []
-                        for category, count in categories.items():
-                            if count > 0:
-                                cat_data.append({'Category': category, 'Count': count})
+                    # Content quality analysis - only if Phase 3 is enabled
+                    if phase_config.get('phase3_enabled', True):
+                        st.markdown("##### Content Quality Analysis")
                         
-                        if cat_data:
-                            df = pd.DataFrame(cat_data)
-                            st.bar_chart(df.set_index('Category'))
-                    
-                    # Platform-specific results
-                    st.markdown("#### Platform-Specific Analysis")
-                    platforms = complaint_analysis.get('platforms', {})
-                    for platform, platform_data in platforms.items():
-                        if platform_data.get('total_results', 0) > 0:
-                            with st.expander(f"{platform} - {platform_data['total_results']} complaints"):
-                                st.markdown(f"**Average Complaint Score:** {platform_data.get('avg_complaint_score', 0):.2f}")
+                        quality_data = []
+                        for page in analyzed_pages:
+                            quality = page['quality']
+                            quality_data.append({
+                                'Page': page['title'][:50] + '...' if len(page['title']) > 50 else page['title'],
+                                'Category': page['category'],
+                                'Completeness': quality.get('completeness_score', 0),
+                                'Content Richness': quality.get('content_richness', 0),
+                                'Structure Quality': quality.get('structure_quality', 0),
+                                'Word Count': page['word_count']
+                            })
+                        
+                        if quality_data:
+                            import pandas as pd
+                            df = pd.DataFrame(quality_data)
+                            st.dataframe(df)
+                        
+                        # Detailed page analysis
+                        with st.expander("View Detailed Page Analysis"):
+                            for page in analyzed_pages:
+                                category_emoji = {
+                                    'pricing': '💰', 'features': '🎯', 'blog': '📰', 
+                                    'careers': '💼', 'contact': '📞', 'about': '🏢'
+                                }.get(page['category'], '📄')
                                 
-                                # Show top complaints for this platform
-                                top_complaints = platform_data.get('top_complaints', [])
-                                if top_complaints:
-                                    st.markdown("**Top Complaints:**")
-                                    for i, complaint in enumerate(top_complaints[:5], 1):
-                                        st.markdown(f"{i}. **{complaint.get('title', 'No title')}** (Score: {complaint.get('complaint_score', 0):.2f})")
-                                        st.markdown(f"   - {complaint.get('description', 'No description')}")
-                                        st.markdown(f"   - URL: {complaint.get('url', 'No URL')}")
-                    
-                    # Top overall complaints
-                    st.markdown("#### Top Overall Complaints")
-                    top_complaints = complaint_analysis.get('top_complaints', [])
-                    if top_complaints:
-                        for i, complaint in enumerate(top_complaints[:10], 1):
-                            with st.expander(f"{i}. {complaint.get('title', 'No title')} (Score: {complaint.get('complaint_score', 0):.2f})"):
-                                st.markdown(f"**Platform:** {complaint.get('platform', 'Unknown')}")
-                                st.markdown(f"**Description:** {complaint.get('description', 'No description')}")
-                                st.markdown(f"**URL:** {complaint.get('url', 'No URL')}")
-                                st.markdown(f"**Query:** {complaint.get('query', 'No query')}")
-                                st.markdown(f"**Timestamp:** {complaint.get('timestamp', 'No timestamp')}")
-                    
-                    # Sentiment distribution
-                    st.markdown("#### Sentiment Distribution")
-                    sentiment_dist = complaint_analysis.get('sentiment_distribution', {})
-                    if sentiment_dist:
-                        import pandas as pd
-                        sent_data = []
-                        for sentiment, count in sentiment_dist.items():
-                            if count > 0:
-                                sent_data.append({'Sentiment': sentiment, 'Count': count})
-                        
-                        if sent_data:
-                            df = pd.DataFrame(sent_data)
-                            st.bar_chart(df.set_index('Sentiment'))
-                
+                                st.markdown(f"**{category_emoji} {page['title']} ({page['category']})**")
+                                st.markdown(f"- **URL:** {page['url']}")
+                                st.markdown(f"- **Word Count:** {page['word_count']}")
+                                st.markdown(f"- **Quality Score:** {page['quality'].get('completeness_score', 0):.1f}%")
+                                
+                                if page['meta_description']:
+                                    st.markdown(f"- **Meta Description:** {page['meta_description']}")
+                                
+                                # Show headings structure
+                                headings = page['headings']
+                                if any(headings.values()):
+                                    st.markdown("- **Page Structure:**")
+                                    for level, heading_list in headings.items():
+                                        if heading_list:
+                                            st.markdown(f"  - {level.upper()}: {', '.join(heading_list[:3])}")
+                                st.markdown("---")
+                    else:
+                        st.info("📊 Content quality analysis not available - Content Analysis phase was skipped")
+                else:
+                    st.info("No content analysis results available.")
+            
+            # Features Analysis
+            st.markdown("#### 🎯 Features Analysis")
+            features_analysis = st.session_state.get('features_analysis', None)
+            if features_analysis:
+                # Display features analysis results here
+                st.info("Features analysis results would be displayed here when available.")
             else:
-                st.info("No social media complaints found or search not performed.")
-                
-                # Show search details if available
-                if st.session_state.get('complaint_search_results'):
-                    search_summary = st.session_state.complaint_search_results.get('summary', {})
-                    st.markdown("#### Search Summary")
-                    st.markdown(f"**Total Queries:** {search_summary.get('total_queries', 0)}")
-                    st.markdown(f"**Successful Searches:** {search_summary.get('successful_searches', 0)}")
-                    st.markdown(f"**Failed Searches:** {search_summary.get('failed_searches', 0)}")
-                    st.markdown(f"**Success Rate:** {search_summary.get('success_rate', 0):.1f}%")
-
-        elif selected_section == "📱 Social Media Complaints":
-            st.markdown("#### Social Media Complaints & Reviews Analysis")
+                st.info("No features analysis available.")
+        
+        # Tab 3: Business Intelligence  
+        with tab3:
+            st.markdown("### Business Intelligence")
             
-            complaint_analysis = st.session_state.get('complaint_analysis', {})
-            complaint_search_results = st.session_state.get('complaint_search_results', {})
-            categorized_complaints = st.session_state.get('categorized_complaints', [])
-            categorization_report = st.session_state.get('categorization_report', None)
+            # Pricing Analysis
+            st.markdown("#### 💰 Pricing Analysis")
+            if not (phase_config.get('phase2_enabled', True) or phase_config.get('phase3_enabled', True)):
+                st.warning("⏭️ Content Scraping/Analysis phases were skipped. No pricing analysis available.")
+            else:
+                pricing_analysis = st.session_state.get('pricing_analysis', None)
+                if pricing_analysis:
+                    _render_pricing_analysis_tab(pricing_analysis)
+                else:
+                    st.info("No pricing analysis available.")
             
-            # Show AI categorization results first if available
-            if categorization_report and categorized_complaints:
-                st.markdown("### 🤖 AI-Powered Complaint Categorization")
-                
-                # Executive Summary
-                with st.expander("📋 Executive Summary", expanded=True):
-                    st.markdown(categorization_report.get('executive_summary', 'No executive summary available'))
-                
-                # Overall Statistics
-                overall_stats = categorization_report.get('overall_statistics', {})
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Total Categorized", overall_stats.get('total_complaints', 0))
-                
-                with col2:
-                    category_count = len(overall_stats.get('category_distribution', {}))
-                    st.metric("Categories Found", category_count)
-                
-                with col3:
-                    # Show most severe complaints
-                    severity_dist = overall_stats.get('severity_distribution', {})
-                    high_critical = severity_dist.get('High', 0) + severity_dist.get('Critical', 0)
-                    st.metric("High/Critical Issues", high_critical)
-                
-                with col4:
-                    # Show most negative sentiment
-                    sentiment_dist = overall_stats.get('sentiment_distribution', {})
-                    negative = sentiment_dist.get('Very Negative', 0) + sentiment_dist.get('Negative', 0)
-                    st.metric("Negative Sentiment", negative)
-                
-                # Category Distribution Chart
-                st.markdown("#### Complaint Categories Distribution")
-                category_dist = overall_stats.get('category_distribution', {})
-                if category_dist:
-                    import pandas as pd
-                    cat_data = []
-                    for category, count in category_dist.items():
-                        if count > 0:
-                            cat_data.append({'Category': category, 'Count': count})
-                    
-                    if cat_data:
-                        df = pd.DataFrame(cat_data)
-                        st.bar_chart(df.set_index('Category'))
-                
-                # Detailed Category Analysis
-                st.markdown("#### Detailed Category Analysis")
-                category_analyses = categorization_report.get('category_analyses', {})
-                
-                for category, analysis in category_analyses.items():
-                    with st.expander(f"{category} - {analysis['total_complaints']} complaints"):
-                        st.markdown(f"**Total Complaints:** {analysis['total_complaints']}")
-                        
-                        # Severity breakdown
-                        st.markdown("**Severity Distribution:**")
-                        severity_breakdown = analysis['severity_distribution']
-                        for severity, count in severity_breakdown.items():
-                            if count > 0:
-                                st.markdown(f"- {severity}: {count}")
-                        
-                        # Top keywords
-                        st.markdown("**Common Keywords:**")
-                        for keyword, count in analysis['common_keywords'][:5]:
-                            st.markdown(f"- {keyword}: {count}")
-                        
-                        # Trend analysis
-                        st.markdown("**Trend Analysis:**")
-                        st.markdown(analysis['trend_analysis'])
-                        
-                        # Top complaints in this category
-                        st.markdown("**Top Complaints:**")
-                        for i, complaint in enumerate(analysis['top_complaints'][:3], 1):
-                            st.markdown(f"{i}. **{complaint['summary']}** (Severity: {complaint['severity']}, Confidence: {complaint['confidence']:.2f})")
-                            st.markdown(f"   Source: {complaint['source']} | Platform: {complaint['platform']}")
-                        
-                        # Actionable insights
-                        if analysis['actionable_insights']:
-                            st.markdown("**Actionable Insights:**")
-                            for insight in analysis['actionable_insights'][:3]:
-                                st.markdown(f"- {insight}")
-                        
-                        # Recommendations
-                        if analysis['recommendations']:
-                            st.markdown("**Recommendations for StoreHub:**")
-                            for rec in analysis['recommendations'][:3]:
-                                st.markdown(f"- {rec}")
-                
-                # Top Weaknesses Across All Categories
-                st.markdown("#### Top Competitor Weaknesses")
-                top_weaknesses = categorization_report.get('top_weaknesses', [])
-                if top_weaknesses:
-                    for i, weakness in enumerate(top_weaknesses[:5], 1):
-                        st.markdown(f"{i}. {weakness}")
-                
-                # Platform Distribution
-                st.markdown("#### Platform Distribution")
-                platform_dist = overall_stats.get('platform_distribution', {})
-                if platform_dist:
-                    import pandas as pd
-                    platform_data = []
-                    for platform, count in platform_dist.items():
-                        if count > 0:
-                            platform_data.append({'Platform': platform, 'Count': count})
-                    
-                    if platform_data:
-                        df = pd.DataFrame(platform_data)
-                        st.bar_chart(df.set_index('Platform'))
-                
-                # Sentiment Analysis
-                st.markdown("#### Sentiment Analysis")
-                sentiment_dist = overall_stats.get('sentiment_distribution', {})
-                if sentiment_dist:
-                    import pandas as pd
-                    sent_data = []
-                    for sentiment, count in sentiment_dist.items():
-                        if count > 0:
-                            sent_data.append({'Sentiment': sentiment, 'Count': count})
-                    
-                    if sent_data:
-                        df = pd.DataFrame(sent_data)
-                        st.bar_chart(df.set_index('Sentiment'))
-                
-                # Raw categorized complaints
-                with st.expander("📝 View All Categorized Complaints"):
-                    for i, complaint in enumerate(categorized_complaints, 1):
-                        st.markdown(f"**{i}. {complaint.category} - {complaint.subcategory}**")
-                        st.markdown(f"*Severity: {complaint.severity} | Confidence: {complaint.confidence:.2f} | Sentiment: {complaint.sentiment}*")
-                        st.markdown(f"**Summary:** {complaint.summary}")
-                        st.markdown(f"**Source:** {complaint.source} | **Platform:** {complaint.platform}")
-                        st.markdown(f"**Keywords:** {', '.join(complaint.keywords)}")
-                        st.markdown(f"**StoreHub Opportunity:** {complaint.actionable_insight}")
-                        st.markdown("---")
+            st.markdown("---")
+            
+            # Monetization Analysis
+            st.markdown("#### 💼 Monetization Analysis")
+            if not (phase_config.get('phase2_enabled', True) or phase_config.get('phase3_enabled', True)):
+                st.warning("⏭️ Content Scraping/Analysis phases were skipped. No monetization analysis available.")
+            else:
+                monetization_analysis = st.session_state.get('monetization_analysis', None)
+                if monetization_analysis:
+                    _render_monetization_analysis_tab(monetization_analysis)
+                else:
+                    st.info("No monetization analysis available.")
+            
+            st.markdown("---")
+            
+            # Vision & Roadmap Analysis
+            st.markdown("#### 🔮 Vision & Roadmap Analysis")
+            if not (phase_config.get('phase2_enabled', True) or phase_config.get('phase3_enabled', True)):
+                st.warning("⏭️ Content Scraping/Analysis phases were skipped. No vision analysis available.")
+            else:
+                vision_analysis = st.session_state.get('vision_analysis', None)
+                if vision_analysis:
+                    _render_vision_analysis_tab(vision_analysis)
+                else:
+                    st.info("No vision analysis available.")
+        
+        # Tab 4: Competitive Intelligence
+        with tab4:
+            st.markdown("### Competitive Intelligence")
+            
+            # AI Categorized Complaints
+            st.markdown("#### 🤖 AI Categorized Complaints")
+            if not (phase_config.get('phase4_enabled', True) or phase_config.get('phase5_enabled', True)):
+                st.warning("⏭️ Social media analysis phases were skipped. No complaint analysis available.")
+            else:
+                categorization_report = st.session_state.get('categorization_report', None)
+                if categorization_report:
+                    _render_complaint_categorization_tab(categorization_report)
+                else:
+                    st.info("No complaint categorization results available.")
+            
+            st.markdown("---")
+            
+            # Social Media Complaints
+            st.markdown("#### 📱 Social Media Complaints")
+            if not phase_config.get('phase4_enabled', True):
+                st.warning("⏭️ Google Search phase was skipped. No social media complaints available.")
+            else:
+                complaint_analysis = st.session_state.get('complaint_analysis', None)
+                if complaint_analysis:
+                    _render_social_complaints_tab(complaint_analysis)
+                else:
+                    st.info("No social media complaint analysis available.")
+        
+        # Tab 5: Content Insights
+        with tab5:
+            st.markdown("### Content Insights")
+            
+            if not (phase_config.get('phase1_enabled', True) and phase_config.get('phase2_enabled', True)):
+                st.warning("⏭️ URL Discovery and Content Scraping phases were skipped. No content insights available.")
+            else:
+                # Blog & News
+                st.markdown("#### 📰 Blog & News")
+                blog_pages = [page for page in analyzed_pages if page.get('category') == 'blog'] if analyzed_pages else []
+                if blog_pages:
+                    for page in blog_pages[:5]:  # Show top 5 blog posts
+                        with st.expander(f"📰 {page['title']}"):
+                            st.markdown(f"**URL:** {page['url']}")
+                            st.markdown(f"**Word Count:** {page['word_count']}")
+                            if page.get('meta_description'):
+                                st.markdown(f"**Description:** {page['meta_description']}")
+                else:
+                    st.info("No blog/news content found.")
                 
                 st.markdown("---")
-            
-            # Show raw Google search results as secondary information
-            if complaint_analysis and complaint_analysis.get('total_complaints', 0) > 0:
-                st.markdown("### 🔍 Raw Search Results")
                 
-                with st.expander("View Raw Google Search Results", expanded=False):
-                    # Overall metrics
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Total Complaints", complaint_analysis['total_complaints'])
-                    
-                    with col2:
-                        platforms_searched = len(complaint_analysis['platforms'])
-                        st.metric("Platforms Searched", platforms_searched)
-                    
-                    with col3:
-                        # Calculate average complaint score
-                        top_complaints = complaint_analysis.get('top_complaints', [])
-                        if top_complaints:
-                            avg_score = sum(c.get('complaint_score', 0) for c in top_complaints) / len(top_complaints)
-                            st.metric("Avg Complaint Score", f"{avg_score:.2f}")
-                        else:
-                            st.metric("Avg Complaint Score", "N/A")
-                    
-                    with col4:
-                        # Show search success rate
-                        search_summary = complaint_analysis.get('summary', {})
-                        success_rate = search_summary.get('success_rate', 0)
-                        st.metric("Search Success Rate", f"{success_rate:.1f}%")
-                    
-                    # Complaint categories breakdown
-                    st.markdown("#### Complaint Categories")
-                    categories = complaint_analysis.get('complaint_categories', {})
-                    if categories:
-                        # Create dataframe for chart
-                        import pandas as pd
-                        cat_data = []
-                        for category, count in categories.items():
-                            if count > 0:
-                                cat_data.append({'Category': category, 'Count': count})
-                        
-                        if cat_data:
-                            df = pd.DataFrame(cat_data)
-                            st.bar_chart(df.set_index('Category'))
-                    
-                    # Platform-specific results
-                    st.markdown("#### Platform-Specific Analysis")
-                    platforms = complaint_analysis.get('platforms', {})
-                    for platform, platform_data in platforms.items():
-                        if platform_data.get('total_results', 0) > 0:
-                            with st.expander(f"{platform} - {platform_data['total_results']} complaints"):
-                                st.markdown(f"**Average Complaint Score:** {platform_data.get('avg_complaint_score', 0):.2f}")
-                                
-                                # Show top complaints for this platform
-                                top_complaints = platform_data.get('top_complaints', [])
-                                if top_complaints:
-                                    st.markdown("**Top Complaints:**")
-                                    for i, complaint in enumerate(top_complaints[:5], 1):
-                                        st.markdown(f"{i}. **{complaint.get('title', 'No title')}** (Score: {complaint.get('complaint_score', 0):.2f})")
-                                        st.markdown(f"   - {complaint.get('description', 'No description')}")
-                                        st.markdown(f"   - URL: {complaint.get('url', 'No URL')}")
-                    
-                    # Top overall complaints
-                    st.markdown("#### Top Overall Complaints")
-                    top_complaints = complaint_analysis.get('top_complaints', [])
-                    if top_complaints:
-                        for i, complaint in enumerate(top_complaints[:10], 1):
-                            with st.expander(f"{i}. {complaint.get('title', 'No title')} (Score: {complaint.get('complaint_score', 0):.2f})"):
-                                st.markdown(f"**Platform:** {complaint.get('platform', 'Unknown')}")
-                                st.markdown(f"**Description:** {complaint.get('description', 'No description')}")
-                                st.markdown(f"**URL:** {complaint.get('url', 'No URL')}")
-                                st.markdown(f"**Query:** {complaint.get('query', 'No query')}")
-                                st.markdown(f"**Timestamp:** {complaint.get('timestamp', 'No timestamp')}")
-                    
-                    # Sentiment distribution
-                    st.markdown("#### Sentiment Distribution")
-                    sentiment_dist = complaint_analysis.get('sentiment_distribution', {})
-                    if sentiment_dist:
-                        import pandas as pd
-                        sent_data = []
-                        for sentiment, count in sentiment_dist.items():
-                            if count > 0:
-                                sent_data.append({'Sentiment': sentiment, 'Count': count})
-                        
-                        if sent_data:
-                            df = pd.DataFrame(sent_data)
-                            st.bar_chart(df.set_index('Sentiment'))
-                
-            else:
-                st.info("No social media complaints found or search not performed.")
-                
-                # Show search details if available
-                if complaint_search_results:
-                    search_summary = complaint_search_results.get('summary', {})
-                    st.markdown("#### Search Summary")
-                    st.markdown(f"**Total Queries:** {search_summary.get('total_queries', 0)}")
-                    st.markdown(f"**Successful Searches:** {search_summary.get('successful_searches', 0)}")
-                    st.markdown(f"**Failed Searches:** {search_summary.get('failed_searches', 0)}")
-                    st.markdown(f"**Success Rate:** {search_summary.get('success_rate', 0):.1f}%")
-
-        elif selected_section == "📰 Blog & News":
-            st.markdown("#### Blog & News Analysis")
-            
-            if discovered_urls.get('blog'):
-                urls = discovered_urls['blog']
-                st.markdown(f"Found **{len(urls)}** blog/news pages:")
-                
-                for i, url in enumerate(urls, 1):
-                    with st.expander(f"{i}. {url}"):
-                        st.markdown(f"**URL:** {url}")
-                        
-                        # Try to fetch basic metadata
-                        try:
-                            discovery = URLDiscovery(st.session_state.get('current_url', ''), config)
-                            metadata = discovery.get_page_metadata(url)
-                            
-                            if metadata.get('title'):
-                                st.markdown(f"**Title:** {metadata['title']}")
-                            if metadata.get('description'):
-                                st.markdown(f"**Description:** {metadata['description']}")
-                            
-                            st.markdown(f"[🔗 Visit Page]({url})")
-                            
-                        except Exception as e:
-                            st.warning(f"Could not fetch metadata: {str(e)}")
-            else:
-                st.info("No blog/news pages found for this competitor.")
-        
-        elif selected_section == "💼 Careers Pages":
-            st.markdown("#### Careers Pages Analysis")
-            
-            if discovered_urls.get('careers'):
-                urls = discovered_urls['careers']
-                st.markdown(f"Found **{len(urls)}** careers pages:")
-                
-                for i, url in enumerate(urls, 1):
-                    with st.expander(f"{i}. {url}"):
-                        st.markdown(f"**URL:** {url}")
-                        
-                        # Try to fetch basic metadata
-                        try:
-                            discovery = URLDiscovery(st.session_state.get('current_url', ''), config)
-                            metadata = discovery.get_page_metadata(url)
-                            
-                            if metadata.get('title'):
-                                st.markdown(f"**Title:** {metadata['title']}")
-                            if metadata.get('description'):
-                                st.markdown(f"**Description:** {metadata['description']}")
-                            
-                            st.markdown(f"[🔗 Visit Page]({url})")
-                            
-                        except Exception as e:
-                            st.warning(f"Could not fetch metadata: {str(e)}")
-            else:
-                st.info("No careers pages found for this competitor.")
-        
-        elif selected_section == "📞 Contact & Support":
-            st.markdown("#### Contact & Support Analysis")
-            
-            if discovered_urls.get('contact'):
-                urls = discovered_urls['contact']
-                st.markdown(f"Found **{len(urls)}** contact/support pages:")
-                
-                for i, url in enumerate(urls, 1):
-                    with st.expander(f"{i}. {url}"):
-                        st.markdown(f"**URL:** {url}")
-                        
-                        # Try to fetch basic metadata
-                        try:
-                            discovery = URLDiscovery(st.session_state.get('current_url', ''), config)
-                            metadata = discovery.get_page_metadata(url)
-                            
-                            if metadata.get('title'):
-                                st.markdown(f"**Title:** {metadata['title']}")
-                            if metadata.get('description'):
-                                st.markdown(f"**Description:** {metadata['description']}")
-                            
-                            st.markdown(f"[🔗 Visit Page]({url})")
-                            
-                        except Exception as e:
-                            st.warning(f"Could not fetch metadata: {str(e)}")
-            else:
-                st.info("No contact/support pages found for this competitor.")
-        
-        elif selected_section == "🏢 About Pages":
-            st.markdown("#### About Pages Analysis")
-            
-            if discovered_urls.get('about'):
-                urls = discovered_urls['about']
-                st.markdown(f"Found **{len(urls)}** about pages:")
-                
-                for i, url in enumerate(urls, 1):
-                    with st.expander(f"{i}. {url}"):
-                        st.markdown(f"**URL:** {url}")
-                        
-                        # Try to fetch basic metadata
-                        try:
-                            discovery = URLDiscovery(st.session_state.get('current_url', ''), config)
-                            metadata = discovery.get_page_metadata(url)
-                            
-                            if metadata.get('title'):
-                                st.markdown(f"**Title:** {metadata['title']}")
-                            if metadata.get('description'):
-                                st.markdown(f"**Description:** {metadata['description']}")
-                            
-                            st.markdown(f"[🔗 Visit Page]({url})")
-                            
-                        except Exception as e:
-                            st.warning(f"Could not fetch metadata: {str(e)}")
-            else:
-                st.info("No about pages found for this competitor.")
-        
-        # Export options
-        st.markdown("### Export Options")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("📄 Export PDF"):
-                st.info("PDF export functionality will be implemented in Phase 4")
-        
-        with col2:
-            if st.button("📊 Export Excel"):
-                st.info("Excel export functionality will be implemented in Phase 4")
-        
-        with col3:
-            if st.button("🔧 Export JSON"):
-                if discovered_urls or analyzed_pages:
-                    # Prepare comprehensive export data
-                    export_data = {
-                        'competitor_name': competitor_name,
-                        'target_country': st.session_state.get('current_country', 'US'),
-                        'analysis_date': datetime.now().isoformat(),
-                        'country_context': country_localization.get_competitor_context(st.session_state.get('current_country', 'US')),
-                        'discovered_urls': discovered_urls,
-                        'discovery_summary': discovery_summary,
-                        'scraping_results': scraping_results,
-                        'analyzed_pages': analyzed_pages,
-                        'complaint_search_results': st.session_state.get('complaint_search_results', {}),
-                        'complaint_analysis': st.session_state.get('complaint_analysis', {}),
-                        'social_scraping_results': st.session_state.get('social_scraping_results', {}),
-                        'social_content_analysis': st.session_state.get('social_content_analysis', {}),
-                        'summary': {
-                            'total_urls_found': sum(len(urls) for urls in discovered_urls.values()),
-                            'pages_scraped': len(analyzed_pages),
-                            'scraping_success_rate': scraping_results.get('summary', {}).get('success_rate', 0),
-                            'avg_quality_score': sum(page['quality'].get('completeness_score', 0) for page in analyzed_pages) / len(analyzed_pages) if analyzed_pages else 0,
-                            'total_complaints_found': st.session_state.get('complaint_analysis', {}).get('total_complaints', 0),
-                            'social_content_pieces': st.session_state.get('social_content_analysis', {}).get('total_content_pieces', 0)
-                        }
-                    }
-                    
-                    st.download_button(
-                        label="Download Complete Analysis",
-                        data=json.dumps(export_data, indent=2),
-                        file_name=f"{competitor_name}_complete_analysis.json",
-                        mime="application/json"
-                    )
+                # Careers Pages
+                st.markdown("#### 💼 Careers Pages")
+                career_pages = [page for page in analyzed_pages if page.get('category') == 'careers'] if analyzed_pages else []
+                if career_pages:
+                    for page in career_pages:
+                        with st.expander(f"💼 {page['title']}"):
+                            st.markdown(f"**URL:** {page['url']}")
+                            st.markdown(f"**Word Count:** {page['word_count']}")
+                            if page.get('meta_description'):
+                                st.markdown(f"**Description:** {page['meta_description']}")
                 else:
-                    st.info("No data available for export")
+                    st.info("No careers content found.")
+                
+                st.markdown("---")
+                
+                # Contact & Support
+                st.markdown("#### 📞 Contact & Support")
+                contact_pages = [page for page in analyzed_pages if page.get('category') == 'contact'] if analyzed_pages else []
+                if contact_pages:
+                    for page in contact_pages:
+                        with st.expander(f"�� {page['title']}"):
+                            st.markdown(f"**URL:** {page['url']}")
+                            st.markdown(f"**Word Count:** {page['word_count']}")
+                            if page.get('contact_info'):
+                                contact_info = page['contact_info']
+                                if contact_info.get('email'):
+                                    st.markdown(f"**Email:** {contact_info['email']}")
+                                if contact_info.get('phone'):
+                                    st.markdown(f"**Phone:** {contact_info['phone']}")
+                else:
+                    st.info("No contact/support content found.")
+                
+                st.markdown("---")
+                
+                # About Pages
+                st.markdown("#### 🏢 About Pages")
+                about_pages = [page for page in analyzed_pages if page.get('category') == 'about'] if analyzed_pages else []
+                if about_pages:
+                    for page in about_pages:
+                        with st.expander(f"🏢 {page['title']}"):
+                            st.markdown(f"**URL:** {page['url']}")
+                            st.markdown(f"**Word Count:** {page['word_count']}")
+                            if page.get('meta_description'):
+                                st.markdown(f"**Description:** {page['meta_description']}")
+                else:
+                    st.info("No about content found.")
     
+    elif st.session_state.get('analysis_status') == "Running":
+        st.info("Analysis in progress... Please wait for completion to view reports.")
+        
+    elif st.session_state.get('analysis_status') == "Error":
+        st.error("Analysis encountered an error. Please try running the analysis again.")
+        
     else:
-        st.info("No completed analyses available. Start a new analysis in the Analysis tab.")
+        st.info("No analysis results available. Please run an analysis first in the Analysis tab.")
+
+def _render_pricing_analysis_tab(pricing_analysis):
+    """Render pricing analysis content in the Business Intelligence tab"""
+    competitor_name = pricing_analysis.get('competitor', 'Unknown')
+    
+    # Executive Summary
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        currency = pricing_analysis.get('currency_detected', 'USD')
+        st.metric("Currency Detected", currency)
+    
+    with col2:
+        hardware_model = pricing_analysis.get('hardware_pricing', {}).get('model_type', 'Unknown')
+        st.metric("Hardware Model", hardware_model.title())
+    
+    with col3:
+        software_model = pricing_analysis.get('software_pricing', {}).get('pricing_model', 'Unknown')
+        st.metric("Software Model", software_model.title())
+    
+    with col4:
+        hidden_fees_risk = pricing_analysis.get('hidden_fees', {}).get('risk_level', 'Unknown')
+        risk_color = {'low': '🟢', 'medium': '🟡', 'high': '🔴'}.get(hidden_fees_risk, '⚪')
+        st.metric("Hidden Fees Risk", f"{risk_color} {hidden_fees_risk.title()}")
+    
+    # Hardware Pricing Details
+    with st.expander("🔧 Hardware Pricing Details"):
+        hardware_pricing = pricing_analysis.get('hardware_pricing', {})
+        if hardware_pricing:
+            st.markdown(f"**Model Type:** {hardware_pricing.get('model_type', 'Unknown').title()}")
+            st.markdown(f"**Cost Structure:** {hardware_pricing.get('cost_structure', 'Unknown').title()}")
+            st.markdown(f"**Hardware Strategy:** {hardware_pricing.get('strategy_analysis', 'No analysis available')}")
+            
+            if hardware_pricing.get('specific_costs'):
+                st.markdown("**Detected Costs:**")
+                for cost in hardware_pricing['specific_costs'][:5]:
+                    st.markdown(f"- {cost}")
+        else:
+            st.info("No hardware pricing details available.")
+    
+    # Software Pricing Details
+    with st.expander("💻 Software Pricing Details"):
+        software_pricing = pricing_analysis.get('software_pricing', {})
+        if software_pricing:
+            st.markdown(f"**Pricing Model:** {software_pricing.get('pricing_model', 'Unknown').title()}")
+            st.markdown(f"**Billing Axis:** {software_pricing.get('billing_axis', 'Unknown').title()}")
+            
+            if software_pricing.get('tier_breakdown'):
+                st.markdown("**Pricing Tiers:**")
+                for tier in software_pricing['tier_breakdown'][:3]:
+                    st.markdown(f"- **{tier.get('name', 'Unknown')}:** {tier.get('price', 'Unknown')} - {tier.get('description', 'No description')}")
+        else:
+            st.info("No software pricing details available.")
+    
+    # Hidden Fees Analysis
+    with st.expander("💸 Hidden Fees Analysis"):
+        hidden_fees = pricing_analysis.get('hidden_fees', {})
+        if hidden_fees and hidden_fees.get('fees_detected'):
+            st.markdown(f"**Risk Level:** {hidden_fees.get('risk_level', 'Unknown').title()}")
+            st.markdown(f"**Total Fees Found:** {len(hidden_fees.get('fees_detected', []))}")
+            
+            st.markdown("**Detected Hidden Fees:**")
+            for fee in hidden_fees.get('fees_detected', [])[:5]:
+                fee_type = fee.get('type', 'Unknown').replace('_', ' ').title()
+                st.markdown(f"- **{fee_type}:** {fee.get('description', 'No description')} (Confidence: {fee.get('confidence', 0):.2f})")
+        else:
+            st.info("No hidden fees detected.")
+
+def _render_monetization_analysis_tab(monetization_analysis):
+    """Render monetization analysis content in the Business Intelligence tab"""
+    # Key Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    revenue_streams = monetization_analysis.get('revenue_streams', {})
+    lock_in_strategies = monetization_analysis.get('lock_in_strategies', {})
+    expansion_revenue = monetization_analysis.get('expansion_revenue', {})
+    
+    with col1:
+        revenue_model = revenue_streams.get('revenue_model_type', 'Unknown')
+        st.metric("Revenue Model", revenue_model.title())
+    
+    with col2:
+        lock_in_strength = lock_in_strategies.get('lock_in_strength', 'Unknown')
+        strength_color = {'low': '🟢', 'medium': '🟡', 'high': '🔴'}.get(lock_in_strength, '⚪')
+        st.metric("Lock-in Strength", f"{strength_color} {lock_in_strength.title()}")
+    
+    with col3:
+        expansion_potential = expansion_revenue.get('expansion_potential', 'Unknown')
+        potential_color = {'low': '🔴', 'medium': '🟡', 'high': '🟢'}.get(expansion_potential, '⚪')
+        st.metric("Expansion Potential", f"{potential_color} {expansion_potential.title()}")
+    
+    with col4:
+        confidence = monetization_analysis.get('confidence_scores', {}).get('overall_confidence', 0)
+        st.metric("Analysis Confidence", f"{confidence:.2f}")
+    
+    # Revenue Streams
+    with st.expander("💰 Revenue Streams Analysis"):
+        primary_streams = revenue_streams.get('primary_streams', [])
+        if primary_streams:
+            st.markdown("**Primary Revenue Streams:**")
+            for stream in primary_streams[:3]:
+                stream_type = stream.get('type', 'Unknown').replace('_', ' ').title()
+                st.markdown(f"- **{stream_type}** (Confidence: {stream.get('confidence', 0):.2f})")
+        else:
+            st.info("No revenue streams identified.")
+    
+    # Customer Lock-in Strategies
+    with st.expander("🔒 Customer Lock-in Analysis"):
+        lock_in_mechanisms = lock_in_strategies.get('lock_in_mechanisms', [])
+        if lock_in_mechanisms:
+            st.markdown("**Lock-in Mechanisms:**")
+            for mechanism in lock_in_mechanisms[:3]:
+                mechanism_type = mechanism.get('type', 'Unknown').replace('_', ' ').title()
+                st.markdown(f"- **{mechanism_type}** (Strength: {mechanism.get('strength', 'Unknown')})")
+        else:
+            st.info("No lock-in mechanisms identified.")
+    
+    # Expansion Revenue
+    with st.expander("📈 Expansion Revenue Analysis"):
+        expansion_mechanisms = expansion_revenue.get('expansion_mechanisms', [])
+        if expansion_mechanisms:
+            st.markdown("**Expansion Mechanisms:**")
+            for mechanism in expansion_mechanisms[:3]:
+                mechanism_type = mechanism.get('type', 'Unknown').replace('_', ' ').title()
+                st.markdown(f"- **{mechanism_type}** (Potential: {mechanism.get('potential', 'Unknown')})")
+        else:
+            st.info("No expansion mechanisms identified.")
+
+def _render_vision_analysis_tab(vision_analysis):
+    """Render vision analysis content in the Business Intelligence tab"""
+    competitor_name = vision_analysis.get('competitor', 'Unknown')
+    
+    # Key Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    product_roadmap = vision_analysis.get('product_roadmap', {})
+    technology_investments = vision_analysis.get('technology_investments', {})
+    market_expansion = vision_analysis.get('market_expansion', {})
+    
+    with col1:
+        roadmap_signals = len(product_roadmap.get('upcoming_features', []))
+        st.metric("Roadmap Signals", roadmap_signals)
+    
+    with col2:
+        tech_investments = len(technology_investments.get('investment_areas', []))
+        st.metric("Tech Investment Areas", tech_investments)
+    
+    with col3:
+        market_targets = len(market_expansion.get('geographic_targets', []))
+        st.metric("Market Expansion Signals", market_targets)
+    
+    with col4:
+        confidence = vision_analysis.get('confidence_scores', {}).get('overall_confidence', 0)
+        st.metric("Analysis Confidence", f"{confidence:.2f}")
+    
+    # Product Roadmap
+    with st.expander("🛣️ Product Roadmap Analysis"):
+        upcoming_features = product_roadmap.get('upcoming_features', [])
+        if upcoming_features:
+            st.markdown("**Upcoming Features:**")
+            for feature in upcoming_features[:5]:
+                st.markdown(f"- **{feature.get('feature', 'Unknown')}** (Confidence: {feature.get('confidence', 0):.2f})")
+        else:
+            st.info("No product roadmap signals identified.")
+    
+    # Technology Investments
+    with st.expander("💻 Technology Investment Analysis"):
+        investment_areas = technology_investments.get('investment_areas', [])
+        if investment_areas:
+            st.markdown("**Technology Investment Areas:**")
+            for area in investment_areas[:5]:
+                area_name = area.get('area', 'Unknown').replace('_', ' ').title()
+                st.markdown(f"- **{area_name}** (Investment Level: {area.get('investment_level', 'Unknown')})")
+        else:
+            st.info("No technology investment signals identified.")
+    
+    # Market Expansion
+    with st.expander("🌍 Market Expansion Analysis"):
+        geographic_targets = market_expansion.get('geographic_targets', [])
+        if geographic_targets:
+            st.markdown("**Geographic Expansion Targets:**")
+            for target in geographic_targets[:5]:
+                st.markdown(f"- **{target.get('region', 'Unknown')}** (Probability: {target.get('probability', 'Unknown')})")
+        else:
+            st.info("No market expansion signals identified.")
+
+def _render_complaint_categorization_tab(categorization_report):
+    """Render complaint categorization content in the Competitive Intelligence tab"""
+    overall_stats = categorization_report.get('overall_statistics', {})
+    
+    # Key Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Complaints", overall_stats.get('total_complaints', 0))
+    
+    with col2:
+        category_dist = overall_stats.get('category_distribution', {})
+        top_category = max(category_dist.items(), key=lambda x: x[1]) if category_dist else ('None', 0)
+        st.metric("Top Category", f"{top_category[0]} ({top_category[1]})")
+    
+    with col3:
+        severity_dist = overall_stats.get('severity_distribution', {})
+        high_critical = severity_dist.get('High', 0) + severity_dist.get('Critical', 0)
+        st.metric("High/Critical Issues", high_critical)
+    
+    with col4:
+        confidence_dist = overall_stats.get('confidence_distribution', {})
+        high_confidence = confidence_dist.get('High', 0)
+        st.metric("High Confidence", high_confidence)
+    
+    # Category Breakdown
+    with st.expander("📊 Category Breakdown"):
+        if category_dist:
+            import pandas as pd
+            df = pd.DataFrame(list(category_dist.items()), columns=['Category', 'Count'])
+            st.bar_chart(df.set_index('Category'))
+        else:
+            st.info("No category distribution data available.")
+    
+    # Severity Analysis
+    with st.expander("⚠️ Severity Analysis"):
+        if severity_dist:
+            import pandas as pd
+            df = pd.DataFrame(list(severity_dist.items()), columns=['Severity', 'Count'])
+            st.bar_chart(df.set_index('Severity'))
+        else:
+            st.info("No severity distribution data available.")
+
+def _render_social_complaints_tab(complaint_analysis):
+    """Render social complaints content in the Competitive Intelligence tab"""
+    # Key Metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Complaints", complaint_analysis.get('total_complaints', 0))
+    
+    with col2:
+        platforms_searched = len(complaint_analysis.get('platforms', {}))
+        st.metric("Platforms Searched", platforms_searched)
+    
+    with col3:
+        top_complaints = complaint_analysis.get('top_complaints', [])
+        if top_complaints:
+            max_score = max(c.get('complaint_score', 0) for c in top_complaints)
+            st.metric("Max Complaint Score", f"{max_score:.2f}")
+        else:
+            st.metric("Max Complaint Score", "N/A")
+    
+    # Platform Breakdown
+    with st.expander("📱 Platform Breakdown"):
+        platforms = complaint_analysis.get('platforms', {})
+        if platforms:
+            import pandas as pd
+            platform_data = []
+            for platform, data in platforms.items():
+                platform_data.append({
+                    'Platform': platform.title(),
+                    'Complaints': data.get('complaint_count', 0),
+                    'Sources': data.get('source_count', 0)
+                })
+            df = pd.DataFrame(platform_data)
+            st.dataframe(df)
+        else:
+            st.info("No platform data available.")
+    
+    # Top Complaints
+    with st.expander("🔥 Top Complaints"):
+        if top_complaints:
+            for i, complaint in enumerate(top_complaints[:5], 1):
+                st.markdown(f"**{i}. {complaint.get('title', 'No title')}**")
+                st.markdown(f"Score: {complaint.get('complaint_score', 0):.2f} | Platform: {complaint.get('platform', 'Unknown')}")
+                if complaint.get('excerpt'):
+                    st.markdown(f"_{complaint['excerpt'][:200]}..._")
+                st.markdown("---")
+        else:
+            st.info("No complaints available.")
 
 def settings_tab():
-    """Application settings and configuration tab"""
-    st.markdown("## Application Settings")
+    """Settings tab"""
+    st.markdown("## Settings")
     
-    # API Configuration
-    st.markdown("### API Configuration")
+    # Configuration settings
+    st.markdown("### Configuration Settings")
+    st.markdown(f"• Max Results: {config.max_search_results}")
+    st.markdown(f"• Request Timeout: {config.request_timeout}s")
+    st.markdown(f"• Rate Limit Delay: {config.rate_limit_delay}s")
     
-    col1, col2 = st.columns(2)
+    # Update configuration
+    st.markdown("### Update Configuration")
+    new_max_results = st.number_input("Max Results", min_value=1, value=int(config.max_search_results), step=1)
+    new_request_timeout = st.number_input("Request Timeout (seconds)", min_value=1, value=int(config.request_timeout), step=1)
+    new_rate_limit_delay = st.number_input("Rate Limit Delay (seconds)", min_value=1.0, value=float(config.rate_limit_delay), step=1.0)
     
-    with col1:
-        openai_api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            placeholder="sk-...",
-            help="Required for AI-powered analysis"
-        )
-    
-    with col2:
-        google_api_key = st.text_input(
-            "Google Search API Key",
-            type="password",
-            placeholder="Your Google API key",
-            help="Required for social media search"
-        )
-    
-    # Analysis Settings
-    st.markdown("### Analysis Settings")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        max_results = st.number_input(
-            "Max Search Results",
-            min_value=10,
-            max_value=100,
-            value=config.max_search_results,
-            help="Maximum number of search results to analyze"
-        )
-    
-    with col2:
-        timeout = st.number_input(
-            "Request Timeout (seconds)",
-            min_value=5,
-            max_value=60,
-            value=config.request_timeout,
-            help="Timeout for web requests"
-        )
-    
-    # Social Media Settings
-    st.markdown("### Social Media Settings")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        use_selenium = st.checkbox(
-            "Use Selenium for JavaScript-heavy sites",
-            value=False,
-            help="Enable Selenium for better Facebook, Twitter, and Instagram scraping"
-        )
-    
-    with col2:
-        max_social_urls = st.number_input(
-            "Max Social Media URLs to Scrape",
-            min_value=5,
-            max_value=50,
-            value=20,
-            help="Maximum number of social media URLs to scrape per analysis"
-        )
-    
-    # Save settings
-    if st.button("💾 Save Settings"):
-        st.success("Settings saved successfully!")
-        logger.info("Settings updated by user")
+    if st.button("Save Changes"):
+        config.max_search_results = new_max_results
+        config.request_timeout = new_request_timeout
+        config.rate_limit_delay = new_rate_limit_delay
+        st.success("Configuration updated successfully!")
 
 def help_tab():
-    """Help and documentation tab"""
-    st.markdown("## Help & Documentation")
-    
-    # Quick start guide
-    st.markdown("### Quick Start Guide")
-    st.markdown("""
-    1. **Enter Competitor Information**: Provide the competitor name and official website URL
-    2. **Select Target Country**: Choose the country for localized competitive analysis
-    3. **Configure Options**: Choose analysis depth and select components to include
-    4. **Start Analysis**: Click the "Start Analysis" button to begin
-    5. **View Reports**: Check the Reports tab for generated insights
-    6. **Export Results**: Export reports in PDF, Excel, or JSON format
-    """)
-    
-    # Features overview
-    st.markdown("### Features")
-    
-    features = [
-        ("🔍 Automated Discovery", "Automatically finds competitor pricing, features, and news pages"),
-        ("🌍 Country Localization", "Targets analysis by country with localized currencies, social platforms, and business context"),
-        ("📱 Social Media Analysis", "Analyzes complaints and feedback across social platforms"),
-        ("🤖 AI-Powered Insights", "Uses GPT-4 for deep analysis and strategic recommendations"),
-        ("📊 Comprehensive Reports", "Generates detailed competitive analysis reports"),
-        ("⚔️ Sales Battlecards", "Creates ready-to-use sales talking points"),
-        ("📈 Marketing Recommendations", "Provides actionable marketing and SEO strategies")
-    ]
-    
-    for icon_title, description in features:
-        st.markdown(f"**{icon_title}**: {description}")
-    
-    # Development roadmap
-    st.markdown("### Development Roadmap")
-    
-    phases = [
-        ("Phase 1: Foundation", "✅ Basic UI and scraping infrastructure"),
-        ("Phase 2: Social Aggregation", "🔄 Social media complaint analysis"),
-        ("Phase 3: LLM Analysis", "⏳ AI-powered competitive analysis"),
-        ("Phase 4: Report Generation", "⏳ Professional report interface"),
-        ("Phase 5: Sales & Marketing", "⏳ Battlecards and recommendations"),
-        ("Phase 6: Testing & Refinement", "⏳ Optimization and deployment")
-    ]
-    
-    for phase, status in phases:
-        st.markdown(f"**{phase}**: {status}")
-    
-    # Contact information
-    st.markdown("### Support")
-    st.markdown("For technical support or feature requests, please contact the development team.")
+    """Help tab"""
+    st.markdown("## Help")
+    st.markdown("### How to Use This Tool")
+    st.markdown("1. **Enter Competitor Information:**")
+    st.markdown("   - Enter the name and URL of the competitor you want to analyze.")
+    st.markdown("2. **Select Analysis Phases:**")
+    st.markdown("   - Choose which analysis phases you want to run.")
+    st.markdown("3. **Run Analysis:**")
+    st.markdown("   - Click the 'Run Analysis' button to start the analysis process.")
+    st.markdown("4. **View Results:**")
+    st.markdown("   - Go to the 'Reports' tab to view detailed analysis results.")
+    st.markdown("5. **Export Data:**")
+    st.markdown("   - Use the export options to save your analysis results.")
+    st.markdown("### About This Tool")
+    st.markdown("This tool uses advanced AI and web scraping techniques to analyze competitors' websites. It provides a deep dive comparative report on the competitor versus StoreHub.")
+    st.markdown("### Contact")
+    st.markdown("For any questions or feedback, please contact us at [support@storehub.com](mailto:support@storehub.com).")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.error(f"Application error: {str(e)}")
-        st.error(f"An error occurred: {str(e)}")
-        st.info("Please check the logs for more details.") 
+    main()

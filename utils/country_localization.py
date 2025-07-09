@@ -871,4 +871,52 @@ class CountryLocalization:
         }
 
 # Global instance
-country_localization = CountryLocalization() 
+_country_localization = CountryLocalization()
+
+# Module-level functions for backward compatibility
+def get_available_countries():
+    """Get list of available countries as (code, name) tuples"""
+    return _country_localization.get_available_countries()
+
+def get_competitor_context(country_code: str):
+    """Get comprehensive competitor analysis context for country"""
+    return _country_localization.get_competitor_context(country_code)
+
+def get_google_search_domain(country_code: str):
+    """Get Google search domain for country"""
+    return _country_localization.get_google_search_domain(country_code)
+
+def get_currency_symbols(country_code: str):
+    """Get currency symbols to look for in pricing analysis"""
+    return _country_localization.get_currency_symbols(country_code)
+
+def get_social_platforms(country_code: str):
+    """Get prioritized social media platforms for country"""
+    return _country_localization.get_social_platforms(country_code)
+
+def get_review_sites(country_code: str):
+    """Get review sites relevant for country"""
+    return _country_localization.get_review_sites(country_code)
+
+def generate_search_queries(competitor_name: str, country_code: str):
+    """Generate country-specific search queries for competitor analysis"""
+    return _country_localization.generate_search_queries(competitor_name, country_code)
+
+def get_localized_pricing_patterns(country_code: str):
+    """Get country-specific pricing patterns to look for"""
+    return _country_localization.get_localized_pricing_patterns(country_code)
+
+def get_business_context(country_code: str):
+    """Get business context for country"""
+    return _country_localization.get_business_context(country_code)
+
+def format_currency(amount: float, country_code: str):
+    """Format currency amount for country"""
+    return _country_localization.format_currency(amount, country_code)
+
+def get_country_config(country_code: str):
+    """Get country configuration"""
+    return _country_localization.get_country_config(country_code)
+
+# For backward compatibility, also create a module-level instance
+country_localization = _country_localization 
