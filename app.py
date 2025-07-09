@@ -14,8 +14,8 @@ if project_root not in sys.path:
 # Import utilities
 from config import Config
 from utils.url_discovery import URLDiscovery
-from utils.scraper import WebScraper
-from utils.google_search import GoogleSearchScraper
+from utils.scraper import WebScraper, extract_page_category, analyze_content_quality
+from utils.google_search import GoogleSearchScraper, analyze_complaint_patterns
 from utils.social_media_scraper import SocialMediaScraper
 from utils.complaint_categorization import ComplaintCategorizer
 from utils.pricing_analysis import PricingAnalyzer
@@ -183,10 +183,16 @@ def analysis_tab():
         
         with col2:
             competitor_url = st.text_input(
-                "Official Website URL",
-                placeholder="https://www.competitor.com",
-                help="Enter the main website URL of the competitor"
+                "Official Website URL (Optional)",
+                placeholder="https://www.competitor.com (leave empty for auto-discovery)",
+                help="Enter the main website URL of the competitor, or leave empty to automatically find it"
             )
+            
+            # Show auto-discovery status
+            if competitor_name and not competitor_url:
+                st.info("💡 URL will be automatically discovered via Google search")
+            elif competitor_url:
+                st.success("✅ Using provided URL")
         
         with col3:
             # Get available countries (now sorted alphabetically)
@@ -296,25 +302,72 @@ def analysis_tab():
             else:
                 st.markdown(f"⏭️ {phase_descriptions[phase_num]} - *Skipped*")
     
-    # Auto-trigger analysis if both inputs are provided
-    if competitor_name and competitor_url:
+    # Auto-trigger analysis if competitor name is provided
+    if competitor_name:
         # Store phase selection in session state
         st.session_state.phase_config = phase_config
         st.session_state.selected_objective = selected_objective
         
         # Calculate total phases to run for progress tracking
         total_phases = sum([phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled])
+        
+        # Add website discovery phase if URL is not provided
+        if not competitor_url:
+            total_phases += 1
+        
         current_phase = 0
         
-        logger.info(f"Starting analysis for {competitor_name} at {competitor_url} for country {country_code}")
+        logger.info(f"Starting analysis for {competitor_name} for country {country_code}")
         logger.info(f"Selected objective: {selected_objective}")
         logger.info(f"Selected phases: {[f'Phase {i+1}' for i, enabled in enumerate([phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled]) if enabled]}")
         
         # Update session state
         st.session_state.analysis_status = "Running"
         st.session_state.current_competitor = competitor_name
-        st.session_state.current_url = competitor_url
         st.session_state.current_country = country_code
+        
+        # Real URL discovery process
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Phase 0: Website Discovery (if URL not provided)
+        if not competitor_url:
+            current_phase += 1
+            progress_percent = int((current_phase / total_phases) * 100)
+            status_text.text(f'🔍 Phase 0: Auto-discovering competitor website... ({current_phase}/{total_phases})')
+            progress_bar.progress(progress_percent)
+            
+            try:
+                # Initialize Google search scraper
+                google_scraper = GoogleSearchScraper(config)
+                
+                # Search for competitor's official website
+                website_search_results = google_scraper.search_competitor_website(competitor_name, country_code)
+                
+                # Get discovered URL
+                discovered_url = website_search_results.get('official_website')
+                
+                if discovered_url:
+                    competitor_url = discovered_url
+                    st.session_state.current_url = competitor_url
+                    st.session_state.website_discovery_results = website_search_results
+                    
+                    st.success(f"✅ Auto-discovered website: {competitor_url}")
+                    logger.info(f"Auto-discovered website for {competitor_name}: {competitor_url}")
+                else:
+                    st.error("❌ Could not auto-discover competitor website. Please provide the URL manually.")
+                    logger.error(f"Failed to auto-discover website for {competitor_name}")
+                    st.session_state.analysis_status = "Error"
+                    return
+                    
+            except Exception as e:
+                st.error(f"❌ Error during website discovery: {str(e)}")
+                logger.error(f"Error during website discovery for {competitor_name}: {str(e)}")
+                st.session_state.analysis_status = "Error"
+                return
+        else:
+            st.session_state.current_url = competitor_url
+            st.session_state.website_discovery_results = None
         
         # Add to recent analyses
         if 'recent_analyses' not in st.session_state:
@@ -330,10 +383,7 @@ def analysis_tab():
         
         st.success(f"Analysis started for {competitor_name} in {country_code}")
         st.info(f"🎯 Objective: {selected_objective}")
-        
-        # Real URL discovery process
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        st.info(f"🌐 Target URL: {competitor_url}")
         
         try:
             # Phase 1: URL Discovery
@@ -355,62 +405,38 @@ def analysis_tab():
                 st.session_state.discovery_summary = {}
                 logger.info("Phase 1 (URL Discovery) skipped")
             
-            # Phase 2: Content Scraping with Country Context
+            # Phase 2: Content Scraping
             if phase2_enabled:
-                current_phase += 1
-                progress_percent = int((current_phase / total_phases) * 100)
-                status_text.text(f'📄 Phase 2: Scraping page content... ({current_phase}/{total_phases})')
-                progress_bar.progress(progress_percent)
+                status_text.text('📄 Phase 2: Scraping competitor pages...')
                 
-                country_context = country_localization.get_competitor_context(country_code)
-                st.info(f"Analyzing for {country_context['country']} market using {country_context['currency']} currency")
+                # Select pages to scrape (limit to prevent timeout)
+                pages_to_scrape = []
+                for page_type in ['pricing', 'features', 'about', 'contact']:
+                    if page_type in discovered_urls:
+                        pages_to_scrape.extend(discovered_urls[page_type][:3])  # Max 3 per type
                 
+                # Limit total pages to prevent timeout
+                pages_to_scrape = pages_to_scrape[:12]  # Max 12 pages total
+                
+                # Scrape pages
                 scraper = WebScraper(config)
-                
-                # Get priority URLs for scraping (limit to key pages)
-                priority_urls = []
-                discovered_urls = st.session_state.get('discovered_urls', {})
-                
-                if discovered_urls:
-                    for category in ['pricing', 'features', 'about', 'contact']:
-                        category_urls = discovered_urls.get(category, [])
-                        if category_urls:
-                            priority_urls.extend(category_urls[:3])  # Take first 3 from each category
-                    
-                    # Add blog URLs (fewer due to volume)
-                    blog_urls = discovered_urls.get('blog', [])
-                    if blog_urls:
-                        priority_urls.extend(blog_urls[:2])  # Take first 2 blog posts
-                else:
-                    # If no URLs discovered, use the main URL
-                    priority_urls = [competitor_url]
-                
-                # Limit total scraping to prevent long wait times
-                max_scrape_pages = min(len(priority_urls), 15)
-                urls_to_scrape = priority_urls[:max_scrape_pages]
-                
-                # Scrape the priority pages with country context
-                scraping_results = scraper.scrape_multiple_pages(urls_to_scrape, country_code=country_code)
+                scraping_results = scraper.scrape_pages(pages_to_scrape)
                 
                 # Store scraping results in session state
                 st.session_state.scraping_results = scraping_results
-                st.session_state.scraping_stats = scraper.get_scraping_stats()
+                st.session_state.scraping_summary = scraper.get_scraping_summary()
             else:
                 # Set empty results if Phase 2 is skipped
-                st.session_state.scraping_results = {'scraped_pages': [], 'summary': {'total_urls': 0}}
-                st.session_state.scraping_stats = {}
+                st.session_state.scraping_results = {}
+                st.session_state.scraping_summary = {}
                 logger.info("Phase 2 (Content Scraping) skipped")
             
             # Phase 3: Content Analysis
             if phase3_enabled:
-                current_phase += 1
-                progress_percent = int((current_phase / total_phases) * 100)
-                status_text.text(f'🧠 Phase 3: Analyzing scraped content... ({current_phase}/{total_phases})')
-                progress_bar.progress(progress_percent)
+                status_text.text('🧠 Phase 3: Analyzing scraped content...')
                 
+                # Analyze scraped content
                 analyzed_pages = []
-                scraping_results = st.session_state.get('scraping_results', {})
-                
                 for scraped_page in scraping_results.get('scraped_pages', []):
                     page_analysis = {
                         'url': scraped_page['url'],
@@ -611,318 +637,139 @@ def analysis_tab():
                     
                     # Log complaint search summary
                     logger.info(f"Google search completed for {competitor_name}")
-                    logger.info(f"Total complaints found: {complaint_analysis['total_complaints']}")
-                    logger.info(f"Platforms searched: {list(complaint_search_results['platforms'].keys())}")
+                    logger.info(f"Total complaints found: {complaint_analysis.get('total_complaints', 0)}")
+                    logger.info(f"Platforms searched: {list(complaint_search_results.get('platforms', {}).keys())}")
                     
                 except Exception as e:
                     logger.error(f"Error during Google search: {str(e)}")
-                    st.warning(f"Google search failed: {str(e)} - continuing with basic analysis")
-                    # Set empty results so the analysis can continue
-                    st.session_state.complaint_search_results = {'platforms': {}, 'summary': {'total_results': 0}}
-                    st.session_state.complaint_analysis = {'total_complaints': 0, 'platforms': {}}
+                    st.warning(f"Google search failed: {str(e)} - continuing with available analysis")
+                    st.session_state.complaint_search_results = {}
+                    st.session_state.complaint_analysis = {}
             else:
                 # Set empty results if Phase 4 is skipped
-                st.session_state.complaint_search_results = {'platforms': {}, 'summary': {'total_results': 0}}
-                st.session_state.complaint_analysis = {'total_complaints': 0, 'platforms': {}}
+                st.session_state.complaint_search_results = {}
+                st.session_state.complaint_analysis = {}
                 logger.info("Phase 4 (Google Search) skipped")
             
             # Phase 5: Social Media Scraping
             if phase5_enabled:
                 current_phase += 1
                 progress_percent = int((current_phase / total_phases) * 100)
-                status_text.text(f'🔍 Phase 5: Scraping social media content... ({current_phase}/{total_phases})')
+                status_text.text(f'📱 Phase 5: Scraping social media content... ({current_phase}/{total_phases})')
                 progress_bar.progress(progress_percent)
                 
-                complaint_search_results = st.session_state.get('complaint_search_results', {})
-                
-                if complaint_search_results.get('summary', {}).get('total_results', 0) > 0:
-                    try:
-                        # Create URLs list from search results
-                        social_urls = create_social_media_urls_from_search_results(complaint_search_results)
-                        
-                        # Limit URLs to prevent excessive scraping
-                        max_social_urls = 20
-                        if len(social_urls) > max_social_urls:
-                            # Prioritize by complaint score
-                            social_urls = sorted(social_urls, key=lambda x: x.get('complaint_score', 0), reverse=True)
-                            social_urls = social_urls[:max_social_urls]
-                        
-                        if social_urls:
-                            # Initialize social media scraper
-                            social_scraper = SocialMediaScraper(config)
-                            
-                            # Scrape social media content
-                            social_scraping_results = social_scraper.scrape_social_media_urls(
-                                social_urls, 
-                                country_code
-                            )
-                            
-                            # Analyze social media content
-                            social_content_analysis = analyze_social_media_content(social_scraping_results)
-                            
-                            # Store results in session state
-                            st.session_state.social_scraping_results = social_scraping_results
-                            st.session_state.social_content_analysis = social_content_analysis
-                            
-                            # Cleanup resources
-                            social_scraper.cleanup()
-                            
-                            # Log social media scraping summary
-                            logger.info(f"Social media scraping completed for {competitor_name}")
-                            logger.info(f"Total content pieces found: {social_content_analysis['total_content_pieces']}")
-                            logger.info(f"Platforms scraped: {list(social_content_analysis['platforms'].keys())}")
-                            
-                        else:
-                            logger.info("No social media URLs found for scraping")
-                            st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
-                            st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
-                            
-                    except Exception as e:
-                        logger.error(f"Error during social media scraping: {str(e)}")
-                        st.warning(f"Social media scraping failed: {str(e)} - continuing with available analysis")
-                        st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
-                        st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
-                else:
-                    logger.info("No complaint search results available for social media scraping")
-                    st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
-                    st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
+                try:
+                    # Initialize social media scraper
+                    social_scraper = SocialMediaScraper(config)
+                    
+                    # Get complaint search results
+                    complaint_search_results = st.session_state.get('complaint_search_results', {})
+                    
+                    # Create social media URLs from search results
+                    social_media_urls = create_social_media_urls_from_search_results(
+                        complaint_search_results, 
+                        competitor_name, 
+                        country_code
+                    )
+                    
+                    # Scrape social media content
+                    social_media_results = social_scraper.scrape_social_media_content(
+                        social_media_urls
+                    )
+                    
+                    # Analyze social media content
+                    social_media_analysis = analyze_social_media_content(
+                        social_media_results, 
+                        competitor_name
+                    )
+                    
+                    # Store results in session state
+                    st.session_state.social_media_results = social_media_results
+                    st.session_state.social_media_analysis = social_media_analysis
+                    
+                    # Log social media scraping summary
+                    logger.info(f"Social media scraping completed for {competitor_name}")
+                    logger.info(f"Social media pages scraped: {len(social_media_results.get('scraped_pages', []))}")
+                    logger.info(f"Social media posts analyzed: {len(social_media_analysis.get('analyzed_posts', []))}")
+                    
+                except Exception as e:
+                    logger.error(f"Error during social media scraping: {str(e)}")
+                    st.warning(f"Social media scraping failed: {str(e)} - continuing with available analysis")
+                    st.session_state.social_media_results = {}
+                    st.session_state.social_media_analysis = {}
             else:
                 # Set empty results if Phase 5 is skipped
-                st.session_state.social_scraping_results = {'scraped_content': [], 'summary': {'total_urls': 0}}
-                st.session_state.social_content_analysis = {'total_content_pieces': 0, 'platforms': {}}
+                st.session_state.social_media_results = {}
+                st.session_state.social_media_analysis = {}
                 logger.info("Phase 5 (Social Media Scraping) skipped")
             
-            # Phase 6: Complaint Categorization
+            # Phase 6: AI Complaint Categorization
             if phase6_enabled:
                 current_phase += 1
                 progress_percent = int((current_phase / total_phases) * 100)
-                status_text.text(f'🤖 Phase 6: Categorizing complaints with AI... ({current_phase}/{total_phases})')
+                status_text.text(f'🤖 Phase 6: AI categorization of complaints... ({current_phase}/{total_phases})')
                 progress_bar.progress(progress_percent)
                 
-                # Check if we have OpenAI API key and complaints to categorize
-                if config.openai_api_key and (st.session_state.get('complaint_analysis', {}).get('total_complaints', 0) > 0 or 
-                                             st.session_state.get('social_content_analysis', {}).get('total_content_pieces', 0) > 0):
-                    try:
-                        from utils.complaint_categorization import ComplaintCategorizer
-                        
-                        # Initialize complaint categorizer
-                        categorizer = ComplaintCategorizer(
-                            api_key=config.openai_api_key,
-                            model=config.model_name,
-                            logger=logger
-                        )
-                        
-                        # Prepare complaints for categorization
-                        complaints_to_categorize = []
-                        
-                        # Add Google search complaints
-                        search_results = st.session_state.get('complaint_search_results', {})
-                        if search_results.get('platforms'):
-                            for platform, platform_data in search_results['platforms'].items():
-                                for result in platform_data.get('results', []):
-                                    if result.get('snippet') and result.get('complaint_score', 0) > 0.3:
-                                        complaints_to_categorize.append({
-                                            'text': result['snippet'],
-                                            'source': f"Google Search - {platform}",
-                                            'url': result.get('url', ''),
-                                            'platform': platform,
-                                            'engagement_metrics': {
-                                                'complaint_score': result.get('complaint_score', 0),
-                                                'relevance_score': result.get('relevance_score', 0)
-                                            }
-                                        })
-                        
-                        # Add social media complaints
-                        social_results = st.session_state.get('social_scraping_results', {})
-                        if social_results.get('scraped_content'):
-                            for content in social_results['scraped_content']:
-                                if content.get('content') and content.get('complaint_score', 0) > 0.3:
-                                    complaints_to_categorize.append({
-                                        'text': content['content'],
-                                        'source': f"Social Media - {content.get('platform', 'Unknown')}",
-                                        'url': content.get('url', ''),
-                                        'platform': content.get('platform', 'unknown'),
-                                        'engagement_metrics': {
-                                            'complaint_score': content.get('complaint_score', 0),
-                                            'likes': content.get('engagement_metrics', {}).get('likes', 0),
-                                            'shares': content.get('engagement_metrics', {}).get('shares', 0),
-                                            'comments': content.get('engagement_metrics', {}).get('comments', 0)
-                                        }
-                                    })
-                        
-                        # Limit complaints to prevent excessive API usage
-                        max_complaints = 50
-                        if len(complaints_to_categorize) > max_complaints:
-                            # Sort by complaint score and take top complaints
-                            complaints_to_categorize = sorted(
-                                complaints_to_categorize, 
-                                key=lambda x: x['engagement_metrics'].get('complaint_score', 0), 
-                                reverse=True
-                            )[:max_complaints]
-                        
-                        # Categorize complaints
-                        if complaints_to_categorize:
-                            logger.info(f"Categorizing {len(complaints_to_categorize)} complaints")
-                            
-                            categorized_complaints = categorizer.categorize_complaints_batch(
-                                complaints_to_categorize,
-                                competitor_name,
-                                batch_size=10  # Process in smaller batches
-                            )
-                            
-                            # Generate comprehensive report
-                            categorization_report = categorizer.generate_comprehensive_report(
-                                categorized_complaints,
-                                competitor_name
-                            )
-                            
-                            # Store results in session state
-                            st.session_state.categorized_complaints = categorized_complaints
-                            st.session_state.categorization_report = categorization_report
-                            
-                            logger.info(f"Complaint categorization completed: {len(categorized_complaints)} complaints categorized")
-                            
-                        else:
-                            logger.info("No complaints found for categorization")
-                            st.session_state.categorized_complaints = []
-                            st.session_state.categorization_report = None
-                            
-                    except Exception as e:
-                        logger.error(f"Error during complaint categorization: {str(e)}")
-                        st.warning(f"Complaint categorization failed: {str(e)} - continuing with basic analysis")
-                        st.session_state.categorized_complaints = []
-                        st.session_state.categorization_report = None
-                        
-                else:
-                    # No API key or no complaints to categorize
-                    if not config.openai_api_key:
-                        logger.info("OpenAI API key not configured - skipping complaint categorization")
-                    else:
-                        logger.info("No complaints found for categorization")
-                    st.session_state.categorized_complaints = []
-                    st.session_state.categorization_report = None
+                try:
+                    # Initialize complaint categorizer
+                    categorizer = ComplaintCategorizer(
+                        api_key=config.openai_api_key,
+                        model_name=config.model_name,
+                        logger=logger
+                    )
+                    
+                    # Get complaint data from previous phases
+                    complaint_search_results = st.session_state.get('complaint_search_results', {})
+                    social_media_results = st.session_state.get('social_media_results', {})
+                    
+                    # Categorize complaints
+                    categorization_report = categorizer.categorize_complaints(
+                        complaint_search_results,
+                        social_media_results,
+                        competitor_name,
+                        country_code
+                    )
+                    
+                    # Store results in session state
+                    st.session_state.categorization_report = categorization_report
+                    
+                    # Log categorization summary
+                    logger.info(f"AI categorization completed for {competitor_name}")
+                    logger.info(f"Total complaints categorized: {len(categorization_report.get('categorized_complaints', []))}")
+                    logger.info(f"Categories found: {list(categorization_report.get('category_analysis', {}).keys())}")
+                    
+                except Exception as e:
+                    logger.error(f"Error during AI categorization: {str(e)}")
+                    st.warning(f"AI categorization failed: {str(e)} - continuing with available analysis")
+                    st.session_state.categorization_report = {}
             else:
                 # Set empty results if Phase 6 is skipped
-                st.session_state.categorized_complaints = []
-                st.session_state.categorization_report = None
+                st.session_state.categorization_report = {}
                 logger.info("Phase 6 (AI Categorization) skipped")
             
+            # Analysis complete
             progress_bar.progress(100)
-            status_text.text('🎉 Analysis completed!')
+            status_text.text(f'✅ Analysis complete! View results in the Reports tab.')
             
+            # Update session state
             st.session_state.analysis_status = "Completed"
             
-            # Show results summary
-            phases_completed = [f"Phase {i+1}" for i, enabled in enumerate([phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled]) if enabled]
-            st.success(f"Analysis completed! Ran {len(phases_completed)} phases: {', '.join(phases_completed)}")
+            # Show completion message
+            st.success("🎉 Analysis completed successfully!")
+            st.info("📊 Switch to the **Reports** tab to view detailed results.")
             
-            # Display quick summary
-            with st.expander("📋 Quick Summary", expanded=True):
-                if phase1_enabled:
-                    discovered_urls = st.session_state.get('discovered_urls', {})
-                    total_urls = sum(len(urls) for urls in discovered_urls.values())
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Total URLs Found", total_urls)
-                    
-                    with col2:
-                        if phase2_enabled:
-                            scraping_results = st.session_state.get('scraping_results', {})
-                            scraped_count = len(scraping_results.get('scraped_pages', []))
-                            st.metric("Pages Scraped", scraped_count)
-                        else:
-                            st.metric("Pages Scraped", "Skipped")
-                    
-                    with col3:
-                        pricing_count = len(discovered_urls.get('pricing', []))
-                        st.metric("Pricing Pages", pricing_count)
-                    
-                    with col4:
-                        features_count = len(discovered_urls.get('features', []))
-                        st.metric("Features Pages", features_count)
-                    
-                    # Show scraping success rate
-                    if phase2_enabled:
-                        scraping_results = st.session_state.get('scraping_results', {})
-                        success_rate = scraping_results.get('summary', {}).get('success_rate', 0)
-                        st.metric("Scraping Success Rate", f"{success_rate:.1f}%")
-                
-                    # Show complaint analysis results if available
-                    if phase4_enabled and st.session_state.get('complaint_analysis'):
-                        complaint_analysis = st.session_state.complaint_analysis
-                        st.markdown("#### Social Media Complaints Analysis")
-                        
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.metric("Total Complaints Found", complaint_analysis['total_complaints'])
-                        
-                        with col2:
-                            platforms_searched = len(complaint_analysis['platforms'])
-                            st.metric("Platforms Searched", platforms_searched)
-                        
-                        with col3:
-                            # Get top complaint score
-                            top_complaints = complaint_analysis.get('top_complaints', [])
-                            if top_complaints:
-                                max_score = max(c.get('complaint_score', 0) for c in top_complaints)
-                                st.metric("Max Complaint Score", f"{max_score:.2f}")
-                            else:
-                                st.metric("Max Complaint Score", "N/A")
-                        
-                        # Show AI categorization results if available
-                        if phase6_enabled and st.session_state.get('categorization_report'):
-                            categorization_report = st.session_state.categorization_report
-                            st.markdown("#### AI Categorization Results")
-                            
-                            overall_stats = categorization_report.get('overall_statistics', {})
-                            col1, col2, col3, col4 = st.columns(4)
-                            
-                            with col1:
-                                st.metric("Categorized Complaints", overall_stats.get('total_complaints', 0))
-                            
-                            with col2:
-                                category_dist = overall_stats.get('category_distribution', {})
-                                top_category = max(category_dist.items(), key=lambda x: x[1]) if category_dist else ('None', 0)
-                                st.metric("Top Category", f"{top_category[0]} ({top_category[1]})")
-                            
-                            with col3:
-                                severity_dist = overall_stats.get('severity_distribution', {})
-                                high_critical = severity_dist.get('High', 0) + severity_dist.get('Critical', 0)
-                                st.metric("High/Critical Issues", high_critical)
-                            
-                            with col4:
-                                confidence_dist = overall_stats.get('confidence_distribution', {})
-                                high_confidence = confidence_dist.get('High', 0)
-                                st.metric("High Confidence", high_confidence)
+            # Log completion
+            logger.info(f"Analysis completed for {competitor_name}")
             
-            # Show phase completion status
-            st.markdown("#### Phase Completion Status")
-            phase_status = []
-            phase_names = ["URL Discovery", "Content Scraping", "Content Analysis", "Google Search", "Social Media Scraping", "AI Categorization"]
-            phase_selections = [phase1_enabled, phase2_enabled, phase3_enabled, phase4_enabled, phase5_enabled, phase6_enabled]
-            
-            for i, (name, enabled) in enumerate(zip(phase_names, phase_selections)):
-                status = "✅ Completed" if enabled else "⏭️ Skipped"
-                phase_status.append(f"Phase {i+1}: {name} - {status}")
-            
-            for status in phase_status:
-                st.markdown(f"• {status}")
-        
-            # Navigation to reports
-            st.markdown("---")
-            st.markdown("### 🎯 Next Steps")
-            st.markdown("Go to the **Reports** tab to view detailed analysis results and export options.")
-                
         except Exception as e:
-            logger.error(f"Error during analysis: {str(e)}", exc_info=True)
+            logger.error(f"Error during analysis: {str(e)}")
             st.error(f"An error occurred during analysis: {str(e)}")
             st.session_state.analysis_status = "Error"
-                
-        else:
-            st.warning("Please enter both competitor name and URL to start analysis.")
+    
+    elif competitor_name:
+        st.info("💡 Enter the competitor name to start analysis. URL will be discovered automatically if not provided.")
+    else:
+        st.info("💡 Enter the competitor name to start analysis.")
 
 def reports_tab():
     """Reports viewing and export tab"""
@@ -1803,21 +1650,97 @@ def settings_tab():
     
     # Configuration settings
     st.markdown("### Configuration Settings")
-    st.markdown(f"• Max Results: {config.max_search_results}")
-    st.markdown(f"• Request Timeout: {config.request_timeout}s")
-    st.markdown(f"• Rate Limit Delay: {config.rate_limit_delay}s")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Current Settings:**")
+        st.markdown(f"• Max Results: {config.max_search_results}")
+        st.markdown(f"• Request Timeout: {config.request_timeout}s")
+        st.markdown(f"• Rate Limit Delay: {config.rate_limit_delay}s")
+        st.markdown(f"• Scraping Delay: {config.scraping_delay}s")
+        st.markdown(f"• Bypass Robots.txt: {'Yes' if config.bypass_robots_txt else 'No'}")
+    
+    with col2:
+        st.markdown("**API Keys Status:**")
+        st.markdown(f"• OpenAI API Key: {'✅ Set' if config.openai_api_key else '❌ Not Set'}")
+        st.markdown(f"• Google API Key: {'✅ Set' if config.google_api_key else '❌ Not Set'}")
     
     # Update configuration
     st.markdown("### Update Configuration")
-    new_max_results = st.number_input("Max Results", min_value=1, value=int(config.max_search_results), step=1)
-    new_request_timeout = st.number_input("Request Timeout (seconds)", min_value=1, value=int(config.request_timeout), step=1)
-    new_rate_limit_delay = st.number_input("Rate Limit Delay (seconds)", min_value=1.0, value=float(config.rate_limit_delay), step=1.0)
     
-    if st.button("Save Changes"):
-        config.max_search_results = new_max_results
-        config.request_timeout = new_request_timeout
-        config.rate_limit_delay = new_rate_limit_delay
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        new_max_results = st.number_input("Max Results", min_value=1, value=int(config.max_search_results), step=1)
+        new_request_timeout = st.number_input("Request Timeout (seconds)", min_value=1, value=int(config.request_timeout), step=1)
+        new_rate_limit_delay = st.number_input("Rate Limit Delay (seconds)", min_value=1.0, value=float(config.rate_limit_delay), step=1.0)
+    
+    with col2:
+        new_scraping_delay = st.number_input("Scraping Delay (seconds)", min_value=1.0, value=float(config.scraping_delay), step=1.0)
+        
+        # Robots.txt bypass option with warning
+        st.markdown("**⚠️ Advanced Scraping Options**")
+        
+        bypass_robots_txt = st.checkbox(
+            "Bypass Robots.txt Restrictions",
+            value=config.bypass_robots_txt,
+            help="Enable this to bypass robots.txt restrictions for competitive analysis. Use responsibly and ethically."
+        )
+        
+        if bypass_robots_txt:
+            st.warning("⚠️ **Important:** Bypassing robots.txt should only be used for legitimate competitive analysis. "
+                      "Ensure you comply with website terms of service and applicable laws. "
+                      "Use this feature responsibly and maintain respectful crawling practices.")
+    
+    # Save changes
+    if st.button("Save Configuration"):
+        config.set('max_search_results', new_max_results)
+        config.set('request_timeout', new_request_timeout)
+        config.set('rate_limit_delay', new_rate_limit_delay)
+        config.set('scraping_delay', new_scraping_delay)
+        config.set('bypass_robots_txt', bypass_robots_txt)
+        
+        # Save to file
+        config.save_config()
+        
         st.success("Configuration updated successfully!")
+        st.info("Changes will take effect on the next analysis run.")
+        
+        # Log configuration change
+        logger.info(f"Configuration updated: bypass_robots_txt={bypass_robots_txt}")
+    
+    # Troubleshooting section
+    st.markdown("---")
+    st.markdown("### 🔧 Troubleshooting")
+    
+    with st.expander("Common Issues and Solutions"):
+        st.markdown("""
+        **Problem: "Robots.txt disallows fetching" errors**
+        - **Solution:** Enable "Bypass Robots.txt Restrictions" above
+        - **Note:** Only use this for legitimate competitive analysis
+        - **Impact:** Will allow scraping of competitor pages that block automated access
+        
+        **Problem: Low scraping success rate**
+        - **Solution 1:** Increase scraping delay to reduce rate limiting
+        - **Solution 2:** Enable robots.txt bypass if competitor blocks crawlers
+        - **Solution 3:** Check if competitor uses anti-bot measures
+        
+        **Problem: Timeout errors**
+        - **Solution:** Increase request timeout setting
+        - **Note:** Some sites may be slow to respond or have geographic restrictions
+        
+        **Problem: No meaningful pricing data**
+        - **Solution 1:** Enable robots.txt bypass to access pricing pages
+        - **Solution 2:** Manually input URLs if automatic discovery fails
+        - **Solution 3:** Use alternative analysis methods (manual research)
+        """)
+    
+    # Reset to defaults
+    st.markdown("---")
+    if st.button("Reset to Defaults", type="secondary"):
+        config.reset_to_defaults()
+        st.success("Configuration reset to default values!")
+        st.experimental_rerun()
 
 def help_tab():
     """Help tab"""

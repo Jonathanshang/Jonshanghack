@@ -50,6 +50,7 @@ class WebScraper:
         self.base_delay = getattr(config, 'scraping_delay', 1.0)
         self.timeout = getattr(config, 'request_timeout', 30)
         self.max_pages_per_site = getattr(config, 'max_pages_per_site', 100)
+        self.bypass_robots_txt = getattr(config, 'bypass_robots_txt', False)
         
         # Content cache
         self.cache = {}
@@ -81,7 +82,12 @@ class WebScraper:
         })
     
     def _can_fetch(self, url: str) -> bool:
-        """Check if URL can be fetched according to robots.txt"""
+        """Check if URL can be fetched according to robots.txt (if enabled)"""
+        # If bypassing robots.txt, always allow fetching
+        if self.bypass_robots_txt:
+            self.logger.debug(f"Bypassing robots.txt check for {url}")
+            return True
+            
         try:
             parsed = urlparse(url)
             base_url = f"{parsed.scheme}://{parsed.netloc}"
@@ -99,7 +105,10 @@ class WebScraper:
             
             robots = self.robots_cache[base_url]
             if robots:
-                return robots.can_fetch(self.session.headers.get('User-Agent', '*'), url)
+                can_fetch = robots.can_fetch(self.session.headers.get('User-Agent', '*'), url)
+                if not can_fetch:
+                    self.logger.debug(f"Robots.txt disallows fetching {url}")
+                return can_fetch
             return True
             
         except Exception as e:
@@ -137,6 +146,108 @@ class WebScraper:
         cached_time = self.cache[cache_key].get('timestamp', 0)
         return time.time() - cached_time < self.cache_duration
     
+    def _try_fallback_scraping(self, url: str, country_code: str = 'US') -> Optional[Dict[str, Any]]:
+        """
+        Try fallback scraping methods when normal scraping fails
+        
+        Args:
+            url: URL to scrape
+            country_code: Country code for localization
+            
+        Returns:
+            Scraped data or None if all methods fail
+        """
+        self.logger.info(f"Attempting fallback scraping methods for {url}")
+        
+        # Method 1: Try different user agents
+        fallback_user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0'
+        ]
+        
+        for user_agent in fallback_user_agents:
+            try:
+                self.logger.debug(f"Trying fallback user agent: {user_agent[:50]}...")
+                
+                # Create new session with different user agent
+                fallback_session = requests.Session()
+                fallback_session.headers.update({
+                    'User-Agent': user_agent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Cache-Control': 'no-cache'
+                })
+                
+                # Add random delay
+                time.sleep(random.uniform(2, 5))
+                
+                response = fallback_session.get(url, timeout=self.timeout)
+                response.raise_for_status()
+                
+                if response.status_code == 200 and len(response.content) > 1000:
+                    self.logger.info(f"Fallback scraping successful with user agent: {user_agent[:50]}...")
+                    return self._process_response(url, response, True, country_code)
+                    
+            except Exception as e:
+                self.logger.debug(f"Fallback user agent failed: {str(e)}")
+                continue
+        
+        # Method 2: Try with mobile user agent
+        try:
+            self.logger.debug("Trying mobile user agent...")
+            mobile_session = requests.Session()
+            mobile_session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive'
+            })
+            
+            time.sleep(random.uniform(3, 6))
+            response = mobile_session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            
+            if response.status_code == 200 and len(response.content) > 1000:
+                self.logger.info("Fallback scraping successful with mobile user agent")
+                return self._process_response(url, response, True, country_code)
+                
+        except Exception as e:
+            self.logger.debug(f"Mobile user agent failed: {str(e)}")
+        
+        # Method 3: Try with minimal headers
+        try:
+            self.logger.debug("Trying minimal headers...")
+            minimal_session = requests.Session()
+            minimal_session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (compatible; WebScraper/1.0; +http://www.webscraper.com)',
+                'Accept': 'text/html',
+                'Connection': 'keep-alive'
+            })
+            
+            time.sleep(random.uniform(2, 4))
+            response = minimal_session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            
+            if response.status_code == 200 and len(response.content) > 1000:
+                self.logger.info("Fallback scraping successful with minimal headers")
+                return self._process_response(url, response, True, country_code)
+                
+        except Exception as e:
+            self.logger.debug(f"Minimal headers failed: {str(e)}")
+        
+        self.logger.warning(f"All fallback scraping methods failed for {url}")
+        return None
+
     @log_execution_time
     def scrape_page(self, url: str, extract_content: bool = True, country_code: str = 'US') -> Optional[Dict[str, Any]]:
         """
@@ -156,10 +267,19 @@ class WebScraper:
             self.logger.debug(f"Returning cached content for {url}")
             return self.cache[cache_key]['data']
         
-        # Check robots.txt
+        # Check robots.txt (if enabled)
         if not self._can_fetch(url):
-            self.logger.warning(f"Robots.txt disallows fetching {url}")
-            return None
+            if self.bypass_robots_txt:
+                self.logger.info(f"Bypassing robots.txt restriction for {url}")
+            else:
+                self.logger.warning(f"Robots.txt disallows fetching {url} - trying fallback methods")
+                # Try fallback scraping methods
+                fallback_result = self._try_fallback_scraping(url, country_code)
+                if fallback_result:
+                    return fallback_result
+                else:
+                    self.logger.warning(f"Robots.txt disallows fetching {url} - Use bypass_robots_txt=True to override")
+                    return None
         
         domain = urlparse(url).netloc
         
@@ -197,8 +317,13 @@ class WebScraper:
                     sleep_time = self.base_delay * (2 ** attempt) + random.uniform(0, 1)
                     time.sleep(sleep_time)
                 else:
-                    self.logger.error(f"Failed to scrape {url} after {self.max_retries} attempts")
-                    return None
+                    self.logger.error(f"Failed to scrape {url} after {self.max_retries} attempts - trying fallback methods")
+                    # Try fallback methods as last resort
+                    fallback_result = self._try_fallback_scraping(url, country_code)
+                    if fallback_result:
+                        return fallback_result
+                    else:
+                        return None
                     
             except Exception as e:
                 self.logger.error(f"Unexpected error scraping {url}: {str(e)}")

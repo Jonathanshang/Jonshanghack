@@ -295,59 +295,60 @@ class SocialMediaScraperBase:
     
     def _extract_facebook_content(self, soup: BeautifulSoup, content: Dict[str, Any]) -> Dict[str, Any]:
         """Extract Facebook-specific content"""
-        # Facebook post extraction
-        posts = soup.find_all(['div'], {'data-testid': 'post_message'})
-        
-        for post in posts:
-            try:
-                post_text = post.get_text(strip=True)
-                if post_text:
-                    content['posts'].append({
-                        'text': post_text,
-                        'platform': 'facebook',
-                        'timestamp': datetime.now().isoformat(),
-                        'engagement': self._extract_facebook_engagement(post)
-                    })
-            except Exception as e:
-                self.logger.debug(f"Error extracting Facebook post: {str(e)}")
-        
-        # Facebook comments
-        comments = soup.find_all(['div'], {'data-testid': 'UFI2Comment/body'})
-        
-        for comment in comments:
-            try:
-                comment_text = comment.get_text(strip=True)
-                if comment_text:
-                    content['comments'].append({
-                        'text': comment_text,
-                        'platform': 'facebook',
-                        'timestamp': datetime.now().isoformat()
-                    })
-            except Exception as e:
-                self.logger.debug(f"Error extracting Facebook comment: {str(e)}")
+        try:
+            # Look for posts
+            post_selectors = [
+                '[data-testid="story-subtilted-top-level"] [data-testid="story-subtitle"]',
+                '[data-ft="top_level_post_id"]',
+                '[data-testid="story-subtitle"]',
+                '.userContent'
+            ]
+            
+            for selector in post_selectors:
+                posts = soup.select(selector)
+                for post in posts:
+                    text = post.get_text(strip=True)
+                    if text and len(text) > 20:
+                        content['posts'].append({
+                            'text': text,
+                            'platform': 'Facebook',
+                            'timestamp': datetime.now().isoformat()
+                        })
+                
+                if content['posts']:
+                    break
+                    
+        except Exception as e:
+            self.logger.debug(f"Error extracting Facebook content: {str(e)}")
         
         return content
     
     def _extract_twitter_content(self, soup: BeautifulSoup, content: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract Twitter/X-specific content"""
-        # Twitter tweet extraction
-        tweets = soup.find_all(['div'], {'data-testid': 'tweet'})
-        
-        for tweet in tweets:
-            try:
-                # Find tweet text
-                tweet_text_elem = tweet.find(['div'], {'data-testid': 'tweetText'})
-                if tweet_text_elem:
-                    tweet_text = tweet_text_elem.get_text(strip=True)
-                    if tweet_text:
+        """Extract Twitter-specific content"""
+        try:
+            # Look for tweets
+            tweet_selectors = [
+                '[data-testid="tweet"]',
+                '.tweet-text',
+                '.TweetTextSize'
+            ]
+            
+            for selector in tweet_selectors:
+                tweets = soup.select(selector)
+                for tweet in tweets:
+                    text = tweet.get_text(strip=True)
+                    if text and len(text) > 10:
                         content['posts'].append({
-                            'text': tweet_text,
-                            'platform': 'twitter',
-                            'timestamp': datetime.now().isoformat(),
-                            'engagement': self._extract_twitter_engagement(tweet)
+                            'text': text,
+                            'platform': 'Twitter',
+                            'timestamp': datetime.now().isoformat()
                         })
-            except Exception as e:
-                self.logger.debug(f"Error extracting Twitter tweet: {str(e)}")
+                
+                if content['posts']:
+                    break
+                    
+        except Exception as e:
+            self.logger.debug(f"Error extracting Twitter content: {str(e)}")
         
         return content
     
@@ -487,50 +488,6 @@ class SocialMediaScraperBase:
                 self.logger.debug(f"Error extracting {platform} reviews with selector {selector}: {str(e)}")
         
         return content
-    
-    def _extract_facebook_engagement(self, post_elem) -> Dict[str, int]:
-        """Extract Facebook engagement metrics"""
-        engagement = {'likes': 0, 'comments': 0, 'shares': 0}
-        
-        try:
-            # Look for engagement elements
-            like_elem = post_elem.find(['span'], string=re.compile(r'\d+.*like'))
-            if like_elem:
-                likes = re.findall(r'\d+', like_elem.get_text())
-                engagement['likes'] = int(likes[0]) if likes else 0
-            
-            comment_elem = post_elem.find(['span'], string=re.compile(r'\d+.*comment'))
-            if comment_elem:
-                comments = re.findall(r'\d+', comment_elem.get_text())
-                engagement['comments'] = int(comments[0]) if comments else 0
-        
-        except Exception as e:
-            self.logger.debug(f"Error extracting Facebook engagement: {str(e)}")
-        
-        return engagement
-    
-    def _extract_twitter_engagement(self, tweet_elem) -> Dict[str, int]:
-        """Extract Twitter engagement metrics"""
-        engagement = {'likes': 0, 'retweets': 0, 'replies': 0}
-        
-        try:
-            # Look for engagement buttons
-            like_elem = tweet_elem.find(['div'], {'data-testid': 'like'})
-            if like_elem:
-                like_text = like_elem.get_text(strip=True)
-                likes = re.findall(r'\d+', like_text)
-                engagement['likes'] = int(likes[0]) if likes else 0
-            
-            retweet_elem = tweet_elem.find(['div'], {'data-testid': 'retweet'})
-            if retweet_elem:
-                retweet_text = retweet_elem.get_text(strip=True)
-                retweets = re.findall(r'\d+', retweet_text)
-                engagement['retweets'] = int(retweets[0]) if retweets else 0
-        
-        except Exception as e:
-            self.logger.debug(f"Error extracting Twitter engagement: {str(e)}")
-        
-        return engagement
     
     def _extract_review_rating(self, review_parent) -> Optional[float]:
         """Extract review rating from parent element"""
@@ -926,11 +883,6 @@ def analyze_social_media_content(scraping_results: Dict[str, Any]) -> Dict[str, 
             'posts': 0,
             'comments': 0,
             'reviews': 0
-        },
-        'engagement_metrics': {
-            'total_likes': 0,
-            'total_shares': 0,
-            'total_comments': 0
         }
     }
     
@@ -989,12 +941,5 @@ def analyze_social_media_content(scraping_results: Dict[str, Any]) -> Dict[str, 
             # Top complaints for this platform
             top_complaints = sorted(all_content, key=lambda x: x.get('complaint_score', 0), reverse=True)[:5]
             analysis['platforms'][platform]['top_complaints'] = top_complaints
-        
-        # Engagement metrics
-        for post in posts:
-            engagement = post.get('engagement', {})
-            analysis['engagement_metrics']['total_likes'] += engagement.get('likes', 0)
-            analysis['engagement_metrics']['total_shares'] += engagement.get('shares', 0)
-            analysis['engagement_metrics']['total_comments'] += engagement.get('comments', 0)
     
     return analysis 

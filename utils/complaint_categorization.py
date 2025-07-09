@@ -18,12 +18,10 @@ class CategorizedComplaint:
     severity: str
     confidence: float
     keywords: List[str]
-    sentiment: str
     summary: str
     actionable_insight: str
     timestamp: datetime
     platform: str
-    engagement_metrics: Dict[str, Any]
 
 @dataclass
 class CategoryAnalysis:
@@ -32,7 +30,6 @@ class CategoryAnalysis:
     total_complaints: int
     severity_distribution: Dict[str, int]
     common_keywords: List[Tuple[str, int]]
-    sentiment_distribution: Dict[str, int]
     top_complaints: List[CategorizedComplaint]
     actionable_insights: List[str]
     trend_analysis: str
@@ -132,9 +129,6 @@ class ComplaintCategorizer:
         # Severity levels
         self.severity_levels = ["Low", "Medium", "High", "Critical"]
         
-        # Sentiment categories
-        self.sentiment_categories = ["Very Negative", "Negative", "Neutral", "Positive", "Very Positive"]
-        
         # Rate limiting
         self.last_request_time = 0
         self.min_request_interval = 1.0  # 1 second between requests
@@ -173,9 +167,8 @@ ANALYSIS REQUIREMENTS:
 3. SEVERITY: Rate as Low, Medium, High, or Critical based on business impact
 4. CONFIDENCE: Rate your confidence in the categorization (0.0-1.0)
 5. KEYWORDS: Extract 3-5 key terms that led to this categorization
-6. SENTIMENT: Classify as Very Negative, Negative, Neutral, Positive, or Very Positive
-7. SUMMARY: Provide a concise 1-2 sentence summary of the complaint
-8. ACTIONABLE INSIGHT: Suggest how {competitor_name}'s competitor (StoreHub) could address this pain point
+6. SUMMARY: Provide a concise 1-2 sentence summary of the complaint
+7. ACTIONABLE INSIGHT: Suggest how {competitor_name}'s competitor (StoreHub) could address this pain point
 
 RESPONSE FORMAT (JSON):
 {{
@@ -184,7 +177,6 @@ RESPONSE FORMAT (JSON):
     "severity": "Severity Level",
     "confidence": 0.95,
     "keywords": ["keyword1", "keyword2", "keyword3"],
-    "sentiment": "Sentiment Level",
     "summary": "Brief summary of the complaint",
     "actionable_insight": "How StoreHub could address this pain point",
     "reasoning": "Brief explanation of why this categorization was chosen"
@@ -199,12 +191,16 @@ IMPORTANT GUIDELINES:
 
 Analyze the complaint and provide your response in the exact JSON format above.
 """
-        return prompt
+        
+        return prompt.strip()
     
     def _parse_gpt_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse GPT-4 response and extract categorization data"""
+        """Parse GPT response and extract categorization data"""
         try:
-            # Try to find JSON in the response
+            # Clean the response text
+            response_text = response_text.strip()
+            
+            # Extract JSON from response
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(0)
@@ -212,104 +208,107 @@ Analyze the complaint and provide your response in the exact JSON format above.
             else:
                 self.logger.warning("No JSON found in GPT response")
                 return self._create_fallback_response()
+                
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse GPT response: {e}")
+            self.logger.error(f"JSON parsing error: {str(e)}")
+            return self._create_fallback_response()
+        except Exception as e:
+            self.logger.error(f"Error parsing GPT response: {str(e)}")
             return self._create_fallback_response()
     
     def _create_fallback_response(self) -> Dict[str, Any]:
-        """Create fallback response when GPT parsing fails"""
+        """Create a fallback response when GPT parsing fails"""
         return {
-            "category": "Unknown",
-            "subcategory": "Uncategorized",
+            "category": "Performance Issues",
+            "subcategory": "General Issues",
             "severity": "Medium",
-            "confidence": 0.1,
-            "keywords": [],
-            "sentiment": "Neutral",
-            "summary": "Failed to categorize complaint",
-            "actionable_insight": "Manual review required",
-            "reasoning": "GPT response parsing failed"
+            "confidence": 0.3,
+            "keywords": ["issue", "problem"],
+            "summary": "Unable to categorize complaint automatically",
+            "actionable_insight": "Manual review required for proper categorization",
+            "reasoning": "Automatic categorization failed"
         }
     
     def categorize_complaint(self, complaint_text: str, source: str, url: str, 
-                           competitor_name: str, platform: str = "unknown",
-                           engagement_metrics: Optional[Dict[str, Any]] = None) -> CategorizedComplaint:
+                           competitor_name: str, platform: str = "unknown") -> CategorizedComplaint:
         """
         Categorize a single complaint using OpenAI GPT-4
         
         Args:
             complaint_text: The complaint text to categorize
-            source: Source of the complaint (e.g., "Facebook post", "G2 review")
+            source: Source of the complaint (e.g., "Google Search", "Social Media")
             url: URL where the complaint was found
-            competitor_name: Name of the competitor being complained about
+            competitor_name: Name of the competitor
             platform: Platform where complaint was found
-            engagement_metrics: Optional engagement metrics (likes, shares, etc.)
-        
+            
         Returns:
-            CategorizedComplaint object with full analysis
+            CategorizedComplaint object with detailed analysis
         """
+        
+        # Rate limiting
+        self._rate_limit()
+        
         try:
-            self._rate_limit()
-            
-            # Create the categorization prompt
-            prompt = self._create_categorization_prompt(complaint_text, competitor_name)
-            
-            # Make API call to OpenAI
+            # Import OpenAI client inside method to avoid import issues
             from openai import OpenAI
+            
+            # Create client with API key
             client = OpenAI(api_key=self.api_key)
             
+            # Create categorization prompt
+            prompt = self._create_categorization_prompt(complaint_text, competitor_name)
+            
+            # Make API call
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are an expert business analyst specializing in competitive intelligence and customer feedback analysis."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=800,
-                temperature=0.3
+                temperature=0.1,
+                max_tokens=500
             )
             
-            # Parse the response
+            # Parse response
             response_text = response.choices[0].message.content
             parsed_response = self._parse_gpt_response(response_text)
             
-            # Create CategorizedComplaint object
-            categorized_complaint = CategorizedComplaint(
+            # Create categorized complaint
+            complaint = CategorizedComplaint(
                 original_text=complaint_text,
                 source=source,
                 url=url,
-                category=parsed_response.get("category", "Unknown"),
-                subcategory=parsed_response.get("subcategory", "Uncategorized"),
+                category=parsed_response.get("category", "Performance Issues"),
+                subcategory=parsed_response.get("subcategory", "General Issues"),
                 severity=parsed_response.get("severity", "Medium"),
-                confidence=float(parsed_response.get("confidence", 0.5)),
+                confidence=parsed_response.get("confidence", 0.5),
                 keywords=parsed_response.get("keywords", []),
-                sentiment=parsed_response.get("sentiment", "Neutral"),
-                summary=parsed_response.get("summary", ""),
-                actionable_insight=parsed_response.get("actionable_insight", ""),
+                summary=parsed_response.get("summary", "No summary available"),
+                actionable_insight=parsed_response.get("actionable_insight", "No actionable insight available"),
                 timestamp=datetime.now(),
-                platform=platform,
-                engagement_metrics=engagement_metrics or {}
+                platform=platform
             )
             
-            self.logger.info(f"Successfully categorized complaint: {categorized_complaint.category}")
-            return categorized_complaint
+            self.logger.debug(f"Categorized complaint: {complaint.category} - {complaint.subcategory}")
+            return complaint
             
         except Exception as e:
-            self.logger.error(f"Error categorizing complaint: {e}")
-            # Return fallback categorized complaint
+            self.logger.error(f"Error categorizing complaint: {str(e)}")
+            
+            # Return fallback categorization
             return CategorizedComplaint(
                 original_text=complaint_text,
                 source=source,
                 url=url,
-                category="Error",
-                subcategory="Processing Error",
+                category="Performance Issues",
+                subcategory="General Issues",
                 severity="Medium",
                 confidence=0.0,
-                keywords=[],
-                sentiment="Neutral",
-                summary="Failed to process complaint",
+                keywords=["error"],
+                summary="Categorization failed",
                 actionable_insight="Manual review required",
                 timestamp=datetime.now(),
-                platform=platform,
-                engagement_metrics=engagement_metrics or {}
+                platform=platform
             )
     
     def categorize_complaints_batch(self, complaints: List[Dict[str, Any]], 
@@ -318,44 +317,37 @@ Analyze the complaint and provide your response in the exact JSON format above.
         Categorize multiple complaints in batches
         
         Args:
-            complaints: List of complaint dictionaries with 'text', 'source', 'url', 'platform', 'engagement_metrics'
+            complaints: List of complaint dictionaries with 'text', 'source', 'url', 'platform'
             competitor_name: Name of the competitor
             batch_size: Number of complaints to process at once
-        
+            
         Returns:
             List of CategorizedComplaint objects
         """
+        
         categorized_complaints = []
-        total_complaints = len(complaints)
         
-        self.logger.info(f"Starting batch categorization of {total_complaints} complaints")
-        
-        for i in range(0, total_complaints, batch_size):
+        for i in range(0, len(complaints), batch_size):
             batch = complaints[i:i + batch_size]
-            batch_number = (i // batch_size) + 1
-            total_batches = (total_complaints + batch_size - 1) // batch_size
             
-            self.logger.info(f"Processing batch {batch_number}/{total_batches}")
+            self.logger.info(f"Processing batch {i//batch_size + 1}/{(len(complaints) + batch_size - 1)//batch_size}")
             
             for complaint in batch:
                 try:
                     categorized_complaint = self.categorize_complaint(
-                        complaint_text=complaint.get('text', ''),
-                        source=complaint.get('source', ''),
-                        url=complaint.get('url', ''),
+                        complaint_text=complaint['text'],
+                        source=complaint['source'],
+                        url=complaint['url'],
                         competitor_name=competitor_name,
-                        platform=complaint.get('platform', 'unknown'),
-                        engagement_metrics=complaint.get('engagement_metrics', {})
+                        platform=complaint.get('platform', 'unknown')
                     )
                     categorized_complaints.append(categorized_complaint)
+                    
                 except Exception as e:
-                    self.logger.error(f"Error processing complaint in batch: {e}")
+                    self.logger.error(f"Error categorizing complaint in batch: {str(e)}")
+                    # Continue with next complaint
                     continue
-            
-            # Small delay between batches
-            time.sleep(2)
         
-        self.logger.info(f"Completed batch categorization: {len(categorized_complaints)} complaints processed")
         return categorized_complaints
     
     def analyze_category_trends(self, categorized_complaints: List[CategorizedComplaint]) -> Dict[str, CategoryAnalysis]:
@@ -390,9 +382,6 @@ Analyze the complaint and provide your response in the exact JSON format above.
                 all_keywords.extend(complaint.keywords)
             common_keywords = Counter(all_keywords).most_common(10)
             
-            # Sentiment distribution
-            sentiment_dist = Counter(c.sentiment for c in complaints)
-            
             # Top complaints by severity and confidence
             top_complaints = sorted(
                 complaints, 
@@ -417,7 +406,6 @@ Analyze the complaint and provide your response in the exact JSON format above.
                 total_complaints=len(complaints),
                 severity_distribution=dict(severity_dist),
                 common_keywords=common_keywords,
-                sentiment_distribution=dict(sentiment_dist),
                 top_complaints=top_complaints,
                 actionable_insights=actionable_insights[:10],  # Top 10 insights
                 trend_analysis=trend_analysis,
@@ -541,7 +529,7 @@ Format as a numbered list of concise recommendations.
         total_complaints = len(valid_complaints)
         category_distribution = Counter(c.category for c in valid_complaints)
         severity_distribution = Counter(c.severity for c in valid_complaints)
-        sentiment_distribution = Counter(c.sentiment for c in valid_complaints)
+        confidence_distribution = Counter(c.confidence for c in valid_complaints)
         platform_distribution = Counter(c.platform for c in valid_complaints)
         
         # Top weaknesses across all categories
@@ -560,26 +548,34 @@ Format as a numbered list of concise recommendations.
         # Compile comprehensive report
         report = {
             "competitor_name": competitor_name,
-            "analysis_date": datetime.now().isoformat(),
-            "executive_summary": executive_summary,
+            "analysis_timestamp": datetime.now().isoformat(),
             "overall_statistics": {
                 "total_complaints": total_complaints,
                 "category_distribution": dict(category_distribution),
                 "severity_distribution": dict(severity_distribution),
-                "sentiment_distribution": dict(sentiment_distribution),
-                "platform_distribution": dict(platform_distribution)
+                "confidence_distribution": dict(confidence_distribution),
+                "platform_distribution": dict(platform_distribution),
+                "avg_confidence": sum(c.confidence for c in valid_complaints) / len(valid_complaints) if valid_complaints else 0,
+                "most_common_keywords": keyword_counts.most_common(20),
+                "high_severity_count": severity_distribution.get('High', 0) + severity_distribution.get('Critical', 0),
+                "actionable_insights_count": len([c for c in valid_complaints if c.actionable_insight and c.actionable_insight != "No actionable insight available"])
             },
             "category_analyses": {
                 category: {
+                    "category": analysis.category,
                     "total_complaints": analysis.total_complaints,
                     "severity_distribution": analysis.severity_distribution,
                     "common_keywords": analysis.common_keywords,
-                    "sentiment_distribution": analysis.sentiment_distribution,
                     "top_complaints": [
                         {
-                            "summary": c.summary,
+                            "text": c.original_text,
+                            "category": c.category,
+                            "subcategory": c.subcategory,
                             "severity": c.severity,
                             "confidence": c.confidence,
+                            "keywords": c.keywords,
+                            "summary": c.summary,
+                            "actionable_insight": c.actionable_insight,
                             "source": c.source,
                             "platform": c.platform
                         }
@@ -605,7 +601,9 @@ Format as a numbered list of concise recommendations.
                     "url": c.url
                 }
                 for c in valid_complaints
-            ]
+            ],
+            "executive_summary": executive_summary,
+            "strategic_recommendations": strategic_recommendations
         }
         
         return report

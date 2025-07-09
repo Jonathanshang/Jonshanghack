@@ -380,6 +380,7 @@ class GoogleSearchScraper:
         ]
     
     @log_execution_time
+    @log_function_call
     def search_competitor_complaints(self, competitor_name: str, country_code: str = 'US') -> Dict[str, Any]:
         """
         Search for competitor complaints across all platforms
@@ -443,6 +444,84 @@ class GoogleSearchScraper:
         
         return results
     
+    @log_execution_time
+    @log_function_call
+    def search_competitor_website(self, competitor_name: str, country_code: str = 'US') -> Dict[str, Any]:
+        """
+        Search for competitor's official website using Google search
+        
+        Args:
+            competitor_name: Name of the competitor
+            country_code: Country code for localized search
+            
+        Returns:
+            Dictionary with search results including official website URL
+        """
+        self.logger.info(f"Searching for official website of {competitor_name} in {country_code}")
+        
+        # Get country-specific Google domain
+        google_domain = country_localization.get_google_search_domain(country_code)
+        
+        # Generate search queries for finding official website
+        search_queries = [
+            f'"{competitor_name}" official website',
+            f'"{competitor_name}" site:',
+            f'{competitor_name} POS system',
+            f'{competitor_name} company website',
+            f'{competitor_name} homepage'
+        ]
+        
+        results = {
+            'competitor_name': competitor_name,
+            'country_code': country_code,
+            'search_queries': search_queries,
+            'official_website': None,
+            'candidate_urls': [],
+            'search_results': []
+        }
+        
+        try:
+            for query in search_queries:
+                self.logger.info(f"Executing search query: {query}")
+                
+                # Execute Google search
+                search_results = self._execute_google_search(query, google_domain, country_code)
+                
+                if search_results:
+                    results['search_results'].extend(search_results)
+                    
+                    # Extract potential official website URLs
+                    for result in search_results:
+                        url = result.get('url', '')
+                        title = result.get('title', '')
+                        
+                        # Score URL based on likelihood of being official website
+                        if self._is_likely_official_website(url, title, competitor_name):
+                            results['candidate_urls'].append({
+                                'url': url,
+                                'title': title,
+                                'score': self._calculate_website_score(url, title, competitor_name),
+                                'description': result.get('description', '')
+                            })
+                
+                # Rate limiting
+                time.sleep(self.config.rate_limit_delay if self.config else 2)
+            
+            # Sort candidates by score and select best match
+            if results['candidate_urls']:
+                results['candidate_urls'].sort(key=lambda x: x['score'], reverse=True)
+                results['official_website'] = results['candidate_urls'][0]['url']
+                
+            self.logger.info(f"Website search completed for {competitor_name}")
+            self.logger.info(f"Official website found: {results['official_website']}")
+            self.logger.info(f"Total candidates found: {len(results['candidate_urls'])}")
+            
+        except Exception as e:
+            self.logger.error(f"Error searching for competitor website: {str(e)}")
+            results['error'] = str(e)
+        
+        return results
+    
     def _search_platform(self, platform: str, queries: List[str], country_code: str) -> Dict[str, Any]:
         """
         Search specific platform with given queries
@@ -465,7 +544,7 @@ class GoogleSearchScraper:
         }
         
         # Get country-specific Google domain
-        google_domain = country_localization.get_google_domain(country_code)
+        google_domain = country_localization.get_google_search_domain(country_code)
         
         for query in queries:
             try:
@@ -724,7 +803,7 @@ class GoogleSearchScraper:
         """
         text = f"{title} {description}".lower()
         
-        # Negative sentiment keywords with weights
+        # Negative keywords with weights
         negative_keywords = {
             'terrible': 0.9, 'awful': 0.9, 'worst': 0.8, 'hate': 0.8,
             'disappointed': 0.7, 'frustrated': 0.7, 'angry': 0.7,
@@ -771,6 +850,105 @@ class GoogleSearchScraper:
         
         return unique_results
 
+    def _is_likely_official_website(self, url: str, title: str, competitor_name: str) -> bool:
+        """
+        Check if a URL is likely to be the official website of the competitor
+        
+        Args:
+            url: URL to check
+            title: Page title
+            competitor_name: Name of the competitor
+            
+        Returns:
+            Boolean indicating if URL is likely official website
+        """
+        if not url:
+            return False
+        
+        # Clean competitor name for comparison
+        clean_competitor = competitor_name.lower().replace(' ', '').replace('pos', '').replace('system', '')
+        
+        # Check if URL contains competitor name
+        url_lower = url.lower()
+        title_lower = title.lower()
+        
+        # Positive indicators
+        positive_indicators = [
+            clean_competitor in url_lower,
+            'official' in title_lower,
+            'homepage' in title_lower,
+            url_lower.startswith('https://www.'),
+            url_lower.endswith('.com'),
+            url_lower.endswith('.com/'),
+            not any(x in url_lower for x in ['review', 'complaint', 'forum', 'reddit', 'facebook', 'twitter', 'linkedin', 'youtube'])
+        ]
+        
+        # Negative indicators
+        negative_indicators = [
+            'wikipedia' in url_lower,
+            'crunchbase' in url_lower,
+            'linkedin' in url_lower,
+            'facebook' in url_lower,
+            'twitter' in url_lower,
+            'youtube' in url_lower,
+            'reddit' in url_lower,
+            'review' in url_lower,
+            'complaint' in url_lower,
+            'vs' in url_lower,
+            'alternative' in url_lower
+        ]
+        
+        return sum(positive_indicators) > sum(negative_indicators)
+    
+    def _calculate_website_score(self, url: str, title: str, competitor_name: str) -> float:
+        """
+        Calculate a score for how likely a URL is to be the official website
+        
+        Args:
+            url: URL to score
+            title: Page title
+            competitor_name: Name of the competitor
+            
+        Returns:
+            Score between 0 and 1
+        """
+        score = 0.0
+        
+        if not url:
+            return score
+        
+        # Clean competitor name for comparison
+        clean_competitor = competitor_name.lower().replace(' ', '').replace('pos', '').replace('system', '')
+        url_lower = url.lower()
+        title_lower = title.lower()
+        
+        # URL structure scoring
+        if clean_competitor in url_lower:
+            score += 0.4
+        if url_lower.startswith('https://www.'):
+            score += 0.1
+        if url_lower.endswith('.com') or url_lower.endswith('.com/'):
+            score += 0.1
+        if '/' not in url_lower[8:]:  # Only domain, no path
+            score += 0.1
+        
+        # Title scoring
+        if clean_competitor in title_lower:
+            score += 0.2
+        if 'official' in title_lower:
+            score += 0.1
+        if 'homepage' in title_lower:
+            score += 0.1
+        
+        # Penalty for third-party sites
+        penalty_sites = ['wikipedia', 'crunchbase', 'linkedin', 'facebook', 'twitter', 'youtube', 'reddit', 'review', 'complaint', 'vs', 'alternative', 'comparison']
+        for site in penalty_sites:
+            if site in url_lower:
+                score -= 0.3
+                break
+        
+        return max(0.0, min(1.0, score))  # Clamp between 0 and 1
+
 
 def analyze_complaint_patterns(search_results: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -791,11 +969,6 @@ def analyze_complaint_patterns(search_results: Dict[str, Any]) -> Dict[str, Any]
             'Billing Issues': 0,
             'Performance Issues': 0,
             'General Complaints': 0
-        },
-        'sentiment_distribution': {
-            'High Negative': 0,
-            'Medium Negative': 0,
-            'Low Negative': 0
         },
         'top_complaints': []
     }
@@ -843,15 +1016,6 @@ def analyze_complaint_patterns(search_results: Dict[str, Any]) -> Dict[str, Any]
             analysis['complaint_categories']['Performance Issues'] += 1
         else:
             analysis['complaint_categories']['General Complaints'] += 1
-        
-        # Sentiment distribution
-        score = result.get('complaint_score', 0)
-        if score >= 0.7:
-            analysis['sentiment_distribution']['High Negative'] += 1
-        elif score >= 0.4:
-            analysis['sentiment_distribution']['Medium Negative'] += 1
-        else:
-            analysis['sentiment_distribution']['Low Negative'] += 1
     
     # Top overall complaints
     sorted_results = sorted(all_results, key=lambda x: x.get('complaint_score', 0), reverse=True)

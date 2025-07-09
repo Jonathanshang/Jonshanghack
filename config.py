@@ -32,6 +32,8 @@ class Config:
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "max_pages_per_site": 10,
             "scraping_delay": 2.0,
+            "bypass_robots_txt": False,  # Allow bypassing robots.txt for competitive analysis
+            "respect_robots_txt": True,  # Deprecated - use bypass_robots_txt instead
             
             # Social Media Settings
             "social_platforms": [
@@ -167,6 +169,14 @@ class Config:
     @property
     def data_directory(self) -> str:
         return self.config.get("data_directory", "data")
+    
+    @property
+    def bypass_robots_txt(self) -> bool:
+        return self.config.get("bypass_robots_txt", False)
+    
+    @property
+    def scraping_delay(self) -> float:
+        return self.config.get("scraping_delay", 2.0)
     
     def create_directories(self) -> None:
         """Create necessary directories if they don't exist"""
